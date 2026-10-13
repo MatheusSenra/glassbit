@@ -60,6 +60,34 @@ impl Emulator {
         self.gb.header().title.clone()
     }
 
+    /// Whether the cartridge has battery-backed RAM, i.e. can save.
+    pub fn has_battery(&self) -> bool {
+        self.gb.has_battery()
+    }
+
+    /// A name to store this cartridge's save under: the title plus the
+    /// header's global checksum, so different games (and different versions
+    /// of one game) do not overwrite each other.
+    pub fn save_key(&self) -> String {
+        let header = self.gb.header();
+        format!("{}-{:04x}", header.title, header.global_checksum)
+    }
+
+    /// A copy of the battery-backed RAM, or `undefined` without a battery.
+    pub fn save_data(&self) -> Option<Vec<u8>> {
+        self.gb.save_data().map(<[u8]>::to_vec)
+    }
+
+    /// Restores battery-backed RAM. Call before running the first frame.
+    pub fn load_save(&mut self, data: &[u8]) -> bool {
+        self.gb.load_save(data)
+    }
+
+    /// Whether the save data changed since the last call.
+    pub fn take_save_dirty(&mut self) -> bool {
+        self.gb.take_save_dirty()
+    }
+
     /// Emulates one video frame.
     pub fn run_frame(&mut self) {
         self.gb.run_frame();
@@ -118,5 +146,15 @@ mod tests {
     #[test]
     fn reports_the_cartridge_title() {
         assert_eq!(Emulator::demo().title(), "GLASSBIT DEMO");
+    }
+
+    #[test]
+    fn demo_has_no_save_but_still_has_a_key() {
+        let mut emulator = Emulator::demo();
+        assert!(!emulator.has_battery());
+        assert!(emulator.save_data().is_none());
+        assert!(!emulator.take_save_dirty());
+        assert!(!emulator.load_save(&[0; 16]));
+        assert!(emulator.save_key().starts_with("GLASSBIT DEMO-"));
     }
 }
