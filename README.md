@@ -2,10 +2,12 @@
 
 # Glassbit
 
+[![CI](https://github.com/MatheusSenra/glassbit/actions/workflows/ci.yml/badge.svg)](https://github.com/MatheusSenra/glassbit/actions/workflows/ci.yml)
+
 A Game Boy (DMG) emulator written in Rust that runs in the browser through
 WebAssembly, built to **show how the hardware works while the game runs**.
 
-> Status: early development. The CPU passes the SingleStepTests vectors and Blargg's instruction tests; there is no video yet.
+> Status: early development. The CPU, interrupts and timer are done and tested; there is no video, sound or web frontend yet, so it cannot run games.
 
 ## Goals
 
@@ -19,8 +21,8 @@ WebAssembly, built to **show how the hardware works while the game runs**.
 | Crate | What it is |
 | --- | --- |
 | `crates/core` (`glassbit-core`) | The emulator. No browser, window or audio dependencies. |
-| `crates/web` (`glassbit-web`) | WebAssembly frontend (`wasm-bindgen`): canvas, input, audio, saves. |
-| `crates/runner` (`glassbit-runner`) | Headless native runner for test ROMs: serial capture and PNG screenshots. |
+| `crates/web` (`glassbit-web`) | WebAssembly frontend (`wasm-bindgen`). A placeholder for now; canvas, input, audio and saves come in phase 5. |
+| `crates/runner` (`glassbit-runner`) | Headless native runner: runs a test ROM and reports whether it passed. |
 
 ## Building
 
@@ -29,7 +31,13 @@ installs itself, including the wasm target.
 
 ```bash
 cargo test --workspace
-cargo run --release -p glassbit-runner -- path/to/test-rom.gb
+```
+
+Tests that need the downloaded test ROMs (see below) skip themselves when the
+ROMs are missing. To run a single test ROM and see its verdict:
+
+```bash
+cargo run --release -p glassbit-runner -- "test-roms/game-boy-test-roms/blargg/cpu_instrs/cpu_instrs.gb"
 ```
 
 To build the web frontend, install [wasm-pack](https://rustwasm.github.io/wasm-pack/) and run:
@@ -52,12 +60,28 @@ Mooneye, dmg-acid2) and the
 [SingleStepTests/sm83](https://github.com/SingleStepTests/sm83) CPU test
 vectors. Pass `--no-sm83` to skip the latter, which is large.
 
+## Accuracy
+
+What passes today, all of it checked by `cargo test` in CI:
+
+| Suite | Result |
+| --- | --- |
+| SingleStepTests/sm83 | all 500 opcodes, 1000 cases each, including per-cycle bus activity |
+| Blargg `cpu_instrs` | all 11 |
+| Blargg `instr_timing` | pass |
+| Blargg `mem_timing` | all 3 |
+| Mooneye `acceptance/timer` | all 13 |
+| Mooneye `acceptance`, other | 15, covering interrupt and HALT timing and the post-boot state |
+
+The remaining Mooneye acceptance tests need the PPU and OAM DMA, or target
+console models other than the DMG.
+
 ## Roadmap
 
 - [x] **Phase 0: Foundation.** Workspace, CI, licenses, test ROM script.
 - [x] **Phase 1: Cartridge and bus.** Header parsing, ROM-only cartridge, full memory map.
 - [x] **Phase 2: CPU.** All opcodes, validated against SingleStepTests and the individual Blargg `cpu_instrs` ROMs; serial port; ROM banking for MBC1.
-- [ ] **Phase 3: Interrupts and timer.** IME, HALT (and its bug), EI delay, DIV/TIMA/TMA/TAC. Blargg `instr_timing`, `mem_timing`, `cpu_instrs` 02 and Mooneye timer tests.
+- [x] **Phase 3: Interrupts and timer.** IME, HALT (and its bug), EI delay, DIV/TIMA/TMA/TAC. Blargg `instr_timing`, `mem_timing`, all of `cpu_instrs` and Mooneye timer tests.
 - [ ] **Phase 4: PPU.** Modes, STAT, background, window, sprites, OAM DMA. Pixel-exact `dmg-acid2`.
 - [ ] **Phase 5: Playable web frontend.** Canvas, frame loop, keyboard, ROM loading.
 - [ ] **Phase 6: Mappers and saves.** The rest of MBC1 (RAM, large ROMs), MBC3, MBC5, battery RAM persisted in the browser.

@@ -54,6 +54,12 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
   M-cycle each) so SingleStepTests can run it against a flat 64 KB RAM and
   compare per-cycle bus activity. `Bus::peek`/`Bus::poke` access memory
   without advancing time (debugger, tests).
+- **Interrupts are sampled during the opcode fetch**, after that cycle's tick.
+  If one is taken the fetched opcode is discarded and the fetch counts as the
+  first of the five dispatch cycles. Waking from HALT into a handler costs one
+  cycle more. Changing this breaks Mooneye `rapid_toggle` or `intr_timing`.
+- **Post-boot timer counter is `0xABC8`**, measured with Mooneye
+  `boot_div-dmgABCmgb` (it is tied to the tick-before-access convention).
 - **Opcodes are decoded by bit fields** (octal `x y z`), not a 256-entry table.
 - **STOP is a NOP** and **illegal opcodes lock the CPU** until something needs
   more.
