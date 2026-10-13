@@ -4,6 +4,10 @@
 //!
 //! - **Blargg**: the ROM prints text over the serial port, ending with a line
 //!   that contains "Passed" or "Failed".
+//! - **Blargg, in memory**: his later ROMs write the same text to cartridge
+//!   RAM instead. `0xA001..=0xA003` hold the signature `DE B0 61`, `0xA000`
+//!   holds `0x80` while running and then the result code (0 = passed), and
+//!   the text starts at `0xA004`.
 //! - **Mooneye**: the ROM executes `LD B,B` as a breakpoint, with the
 //!   Fibonacci numbers 3, 5, 8, 13, 21, 34 in B, C, D, E, H, L on success and
 //!   `0x42` in all of them on failure.
@@ -75,6 +79,11 @@ pub fn run_test(rom: &[u8], max_frames: u32) -> Result<TestRun, CartridgeError> 
         if outcome != Outcome::Timeout {
             continue;
         }
+        if let Some((verdict, text)) = memory_verdict(&gb) {
+            outcome = verdict;
+            output.push_str(&text);
+            break;
+        }
         if output.contains("Passed") {
             outcome = Outcome::Passed;
         } else if output.contains("Failed") {
@@ -114,6 +123,27 @@ pub fn run_screen_test(rom: &[u8], max_frames: u32) -> Result<Vec<u8>, Cartridge
     gb.run_frame();
     gb.run_frame();
     Ok(gb.framebuffer().to_vec())
+}
+
+/// Checks for a finished Blargg test that reports through cartridge RAM.
+fn memory_verdict(gb: &GameBoy) -> Option<(Outcome, String)> {
+    const RUNNING: u8 = 0x80;
+    let signature = [gb.peek(0xA001), gb.peek(0xA002), gb.peek(0xA003)];
+    let status = gb.peek(0xA000);
+    if signature != [0xDE, 0xB0, 0x61] || status == RUNNING {
+        return None;
+    }
+    let text: String = (0xA004..0xC000)
+        .map(|addr| gb.peek(addr))
+        .take_while(|&byte| byte != 0)
+        .map(|byte| byte as char)
+        .collect();
+    let outcome = if status == 0 {
+        Outcome::Passed
+    } else {
+        Outcome::Failed
+    };
+    Some((outcome, text))
 }
 
 fn mooneye_verdict(regs: &Registers) -> Option<Outcome> {

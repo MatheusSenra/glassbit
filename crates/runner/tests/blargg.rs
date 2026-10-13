@@ -117,3 +117,63 @@ mod mem_timing {
         );
     }
 }
+
+/// `dmg_sound`: the APU's registers, length counters, sweep and power
+/// switch. These report through cartridge RAM instead of the serial port.
+///
+/// Tests 09, 10 and 12 are left out: they check what reading and writing
+/// wave RAM does while channel 3 is playing, which is not modeled.
+mod dmg_sound {
+    use super::*;
+
+    const MAX_FRAMES: u32 = 1800;
+
+    fn passes(name: &str) {
+        assert_rom_passes(&format!("blargg/dmg_sound/rom_singles/{name}"), MAX_FRAMES);
+    }
+
+    #[test]
+    fn t01_registers() {
+        passes("01-registers.gb");
+    }
+
+    #[test]
+    fn t02_len_ctr() {
+        passes("02-len ctr.gb");
+    }
+
+    #[test]
+    fn t03_trigger() {
+        passes("03-trigger.gb");
+    }
+
+    #[test]
+    fn t04_sweep() {
+        passes("04-sweep.gb");
+    }
+
+    #[test]
+    fn t05_sweep_details() {
+        passes("05-sweep details.gb");
+    }
+
+    #[test]
+    fn t06_overflow_on_trigger() {
+        passes("06-overflow on trigger.gb");
+    }
+
+    #[test]
+    fn t07_len_sweep_period_sync() {
+        passes("07-len sweep period sync.gb");
+    }
+
+    #[test]
+    fn t08_len_ctr_during_power() {
+        passes("08-len ctr during power.gb");
+    }
+
+    #[test]
+    fn t11_regs_after_power() {
+        passes("11-regs after power.gb");
+    }
+}
