@@ -1,11 +1,13 @@
 //! Cartridges: the header and the memory bank controllers (MBCs).
 
 mod header;
+mod mbc1;
 mod rom_only;
 
 use std::fmt;
 
 pub use header::{CartridgeType, CgbSupport, Header, MapperKind};
+use mbc1::Mbc1;
 use rom_only::RomOnly;
 
 /// A memory bank controller: the chip that decides what the CPU sees in the
@@ -84,6 +86,10 @@ impl Cartridge {
         };
         let mbc: Box<dyn Mbc> = match header.cartridge_type.mapper {
             MapperKind::RomOnly => Box::new(RomOnly::new(rom.to_vec(), ram_size)),
+            // Only the ROM banking half of MBC1 exists so far.
+            MapperKind::Mbc1 if ram_size == 0 && header.rom_size <= mbc1::MAX_ROM_SIZE => {
+                Box::new(Mbc1::new(rom[..header.rom_size].to_vec()))
+            }
             _ => {
                 return Err(CartridgeError::UnsupportedMapper(
                     header.cartridge_type.code,
@@ -213,11 +219,34 @@ mod tests {
     }
 
     #[test]
+    fn builds_an_mbc1_cartridge_without_ram() {
+        let rom = RomBuilder::new()
+            .cartridge_type(0x01)
+            .rom_size_code(1)
+            .build();
+        let mut cart = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        // The builder fills the ROM with the low byte of each offset, so
+        // every bank looks alike; switching must at least not disturb reads.
+        cart.write_rom(0x2000, 3);
+        assert_eq!(cart.read_rom(0x4042), 0x42);
+    }
+
+    #[test]
     fn rejects_unimplemented_mappers() {
-        let rom = RomBuilder::new().cartridge_type(0x01).build();
+        // MBC1 with RAM is not supported yet.
+        let rom = RomBuilder::new()
+            .cartridge_type(0x03)
+            .ram_size_code(2)
+            .build();
         assert_eq!(
             Cartridge::new(&rom).err(),
-            Some(CartridgeError::UnsupportedMapper(0x01))
+            Some(CartridgeError::UnsupportedMapper(0x03))
+        );
+
+        let rom = RomBuilder::new().cartridge_type(0x19).build();
+        assert_eq!(
+            Cartridge::new(&rom).err(),
+            Some(CartridgeError::UnsupportedMapper(0x19))
         );
     }
 
