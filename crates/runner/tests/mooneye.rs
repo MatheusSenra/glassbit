@@ -213,6 +213,11 @@ mod oam_dma {
     fn reg_read() {
         passes("oam_dma/reg_read.gb");
     }
+
+    #[test]
+    fn sources_gs() {
+        passes("oam_dma/sources-GS.gb");
+    }
 }
 
 mod ppu {
