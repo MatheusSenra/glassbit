@@ -1,0 +1,22 @@
+# Build output
+/target/
+/crates/web/pkg/
+
+# Test ROMs are downloaded by scripts/fetch-test-roms.sh, never committed
+/test-roms/
+
+# Never commit ROMs, boot ROMs or saves
+*.gb
+*.gbc
+*.sgb
+*.bin
+*.sav
+
+# Runner output
+/screenshots/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

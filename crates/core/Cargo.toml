@@ -1,0 +1,10 @@
+[package]
+name = "glassbit-core"
+description = "Platform-independent Game Boy (DMG) emulator core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

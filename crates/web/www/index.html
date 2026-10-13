@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Glassbit</title>
+  </head>
+  <body>
+    <h1>Glassbit</h1>
+    <p>Game Boy emulator core <span id="version">loading…</span></p>
+    <script type="module">
+      import init, { core_version } from "../pkg/glassbit_web.js";
+      await init();
+      document.getElementById("version").textContent = `v${core_version()}`;
+    </script>
+  </body>
+</html>
