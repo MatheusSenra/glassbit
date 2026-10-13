@@ -1,15 +1,40 @@
 //! Headless runner for test ROMs.
 //!
-//! For now it loads a ROM and prints its header. Serial capture arrives with
-//! the CPU (Phase 2) and PNG screenshots with the PPU (Phase 4).
+//! Prints the cartridge header, runs the ROM and echoes what it sends over
+//! the serial port. PNG screenshots arrive with the PPU (Phase 4).
 
 use std::process::ExitCode;
 
 use glassbit_core::cartridge::Header;
+use glassbit_runner::{run_serial_test, Outcome};
+
+/// About two minutes of emulated time.
+const DEFAULT_MAX_FRAMES: u32 = 7200;
+
+const USAGE: &str = "usage: glassbit-runner <rom.gb> [--frames N]";
 
 fn main() -> ExitCode {
-    let Some(path) = std::env::args().nth(1) else {
-        eprintln!("usage: glassbit-runner <rom.gb>");
+    let mut path = None;
+    let mut max_frames = DEFAULT_MAX_FRAMES;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--frames" {
+            match args.next().and_then(|value| value.parse().ok()) {
+                Some(frames) => max_frames = frames,
+                None => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::from(2);
+                }
+            }
+        } else if path.is_none() {
+            path = Some(arg);
+        } else {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
 
@@ -23,21 +48,39 @@ fn main() -> ExitCode {
 
     // Parse the header on its own so it can be shown even when the mapper is
     // not supported yet.
-    let header = match Header::parse(&rom) {
-        Ok(header) => header,
+    match Header::parse(&rom) {
+        Ok(header) => print_header(&header),
+        Err(err) => {
+            eprintln!("error: {path}: {err}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let run = match run_serial_test(&rom, max_frames) {
+        Ok(run) => run,
         Err(err) => {
             eprintln!("error: {path}: {err}");
             return ExitCode::FAILURE;
         }
     };
-    print_header(&header);
 
-    if let Err(err) = glassbit_core::GameBoy::new(&rom) {
-        eprintln!("error: {path}: {err}");
-        return ExitCode::FAILURE;
+    println!("--- serial output ---");
+    println!("{}", run.output.trim_end());
+    println!("---------------------");
+    match run.outcome {
+        Outcome::Passed => {
+            println!("PASSED after {} frames", run.frames);
+            ExitCode::SUCCESS
+        }
+        Outcome::Failed => {
+            println!("FAILED after {} frames", run.frames);
+            ExitCode::FAILURE
+        }
+        Outcome::Timeout => {
+            println!("TIMEOUT: no verdict after {} frames", run.frames);
+            ExitCode::FAILURE
+        }
     }
-    println!("cartridge loaded; emulation is not implemented yet");
-    ExitCode::SUCCESS
 }
 
 fn print_header(header: &Header) {
