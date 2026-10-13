@@ -3,7 +3,7 @@
 A Game Boy (DMG) emulator written in Rust that runs in the browser through
 WebAssembly, built to **show how the hardware works while the game runs**.
 
-> Status: early development. The workspace and tooling exist; emulation does not yet.
+> Status: early development. Cartridges load and the memory map exists; the CPU comes next.
 
 ## Goals
 
@@ -53,7 +53,7 @@ vectors. Pass `--no-sm83` to skip the latter, which is large.
 ## Roadmap
 
 - [x] **Phase 0: Foundation.** Workspace, CI, licenses, test ROM script.
-- [ ] **Phase 1: Cartridge and bus.** Header parsing, ROM-only cartridge, full memory map.
+- [x] **Phase 1: Cartridge and bus.** Header parsing, ROM-only cartridge, full memory map.
 - [ ] **Phase 2: CPU.** All opcodes, validated against SingleStepTests and the individual Blargg `cpu_instrs` ROMs; serial port.
 - [ ] **Phase 3: Interrupts and timer.** IME, HALT (and its bug), EI delay, DIV/TIMA/TMA/TAC. Blargg `instr_timing`, `mem_timing`, `cpu_instrs` 02 and Mooneye timer tests.
 - [ ] **Phase 4: PPU.** Modes, STAT, background, window, sprites, OAM DMA. Pixel-exact `dmg-acid2`.
