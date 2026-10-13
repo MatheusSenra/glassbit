@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/banner.webp" alt="Glassbit: transparent emulation" width="800"></p>
+
 # Glassbit
 
 A Game Boy (DMG) emulator written in Rust that runs in the browser through
