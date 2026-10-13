@@ -1,12 +1,12 @@
 //! Headless runner for test ROMs.
 //!
-//! Prints the cartridge header, runs the ROM and echoes what it sends over
-//! the serial port. PNG screenshots arrive with the PPU (Phase 4).
+//! Prints the cartridge header, runs the ROM until it reports a verdict (see
+//! the library docs) and echoes what it sent over the serial port.
 
 use std::process::ExitCode;
 
 use glassbit_core::cartridge::Header;
-use glassbit_runner::{run_serial_test, Outcome};
+use glassbit_runner::{run_test, Outcome};
 
 /// About two minutes of emulated time.
 const DEFAULT_MAX_FRAMES: u32 = 7200;
@@ -56,7 +56,7 @@ fn main() -> ExitCode {
         }
     }
 
-    let run = match run_serial_test(&rom, max_frames) {
+    let run = match run_test(&rom, max_frames) {
         Ok(run) => run,
         Err(err) => {
             eprintln!("error: {path}: {err}");
@@ -64,9 +64,11 @@ fn main() -> ExitCode {
         }
     };
 
-    println!("--- serial output ---");
-    println!("{}", run.output.trim_end());
-    println!("---------------------");
+    if !run.output.is_empty() {
+        println!("--- serial output ---");
+        println!("{}", run.output.trim_end());
+        println!("---------------------");
+    }
     match run.outcome {
         Outcome::Passed => {
             println!("PASSED after {} frames", run.frames);

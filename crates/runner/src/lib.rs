@@ -1,9 +1,18 @@
 //! Runs test ROMs headlessly and decides whether they passed.
+//!
+//! Two reporting conventions are understood:
+//!
+//! - **Blargg**: the ROM prints text over the serial port, ending with a line
+//!   that contains "Passed" or "Failed".
+//! - **Mooneye**: the ROM executes `LD B,B` as a breakpoint, with the
+//!   Fibonacci numbers 3, 5, 8, 13, 21, 34 in B, C, D, E, H, L on success and
+//!   `0x42` in all of them on failure.
 
 use std::path::{Path, PathBuf};
 
 use glassbit_core::cartridge::CartridgeError;
-use glassbit_core::GameBoy;
+use glassbit_core::cpu::Registers;
+use glassbit_core::{GameBoy, CYCLES_PER_FRAME};
 
 /// How a test ROM run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,33 +23,46 @@ pub enum Outcome {
     Timeout,
 }
 
-/// The result of running a ROM that reports over the serial port.
+/// The result of running a test ROM.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SerialRun {
+pub struct TestRun {
     pub outcome: Outcome,
-    /// Everything the ROM printed.
+    /// Everything the ROM printed over the serial port.
     pub output: String,
     pub frames: u32,
 }
 
-/// Frames to keep running after the verdict shows up.
-const VERDICT_TAIL_FRAMES: u32 = 30;
+/// Frames to keep running after a serial verdict shows up, so the rest of
+/// that line is captured.
+const VERDICT_TAIL_FRAMES: u64 = 30;
 
-/// Runs a Blargg-style test ROM, which prints its progress over the serial
-/// port and ends with a line containing "Passed" or "Failed".
-pub fn run_serial_test(rom: &[u8], mut max_frames: u32) -> Result<SerialRun, CartridgeError> {
+const LD_B_B: u8 = 0x40;
+
+/// Runs a test ROM until it reports a verdict or `max_frames` go by.
+pub fn run_test(rom: &[u8], max_frames: u32) -> Result<TestRun, CartridgeError> {
     let mut gb = GameBoy::new(rom)?;
     let mut output = String::new();
     let mut outcome = Outcome::Timeout;
-    let mut frames = 0;
+    let mut deadline = max_frames as u64 * CYCLES_PER_FRAME;
+    let mut next_serial_check = CYCLES_PER_FRAME;
 
-    while frames < max_frames {
-        gb.run_frame();
-        frames += 1;
-        let bytes = gb.take_serial_output();
-        if bytes.is_empty() {
+    while gb.cycles() < deadline {
+        let breakpoint = !gb.cpu().halted && gb.peek(gb.cpu().regs.pc) == LD_B_B;
+        gb.step();
+        if breakpoint {
+            // Blargg's ROMs also execute LD B,B as an ordinary instruction,
+            // so only the two exact register patterns count.
+            if let Some(verdict) = mooneye_verdict(&gb.cpu().regs) {
+                outcome = verdict;
+                break;
+            }
+        }
+
+        if gb.cycles() < next_serial_check {
             continue;
         }
+        next_serial_check += CYCLES_PER_FRAME;
+        let bytes = gb.take_serial_output();
         output.extend(bytes.iter().map(|&b| b as char));
         if outcome != Outcome::Timeout {
             continue;
@@ -52,15 +74,26 @@ pub fn run_serial_test(rom: &[u8], mut max_frames: u32) -> Result<SerialRun, Car
         } else {
             continue;
         }
-        // Keep going briefly so the rest of the verdict line is captured.
-        max_frames = max_frames.min(frames + VERDICT_TAIL_FRAMES);
+        deadline = deadline.min(gb.cycles() + VERDICT_TAIL_FRAMES * CYCLES_PER_FRAME);
     }
 
-    Ok(SerialRun {
+    output.extend(gb.take_serial_output().iter().map(|&b| b as char));
+    Ok(TestRun {
         outcome,
         output,
-        frames,
+        frames: gb.cycles().div_ceil(CYCLES_PER_FRAME) as u32,
     })
+}
+
+fn mooneye_verdict(regs: &Registers) -> Option<Outcome> {
+    let values = [regs.b, regs.c, regs.d, regs.e, regs.h, regs.l];
+    if values == [3, 5, 8, 13, 21, 34] {
+        Some(Outcome::Passed)
+    } else if values == [0x42; 6] {
+        Some(Outcome::Failed)
+    } else {
+        None
+    }
 }
 
 /// Where `scripts/fetch-test-roms.sh` puts the prebuilt test ROMs, if they
@@ -80,4 +113,48 @@ pub fn test_roms_dir() -> Option<PathBuf> {
     );
     eprintln!("skipping: run scripts/fetch-test-roms.sh to enable ROM tests");
     None
+}
+
+/// Runs the ROM at `relative` (inside the test ROM directory) and panics
+/// unless it passes. Does nothing when the ROMs have not been downloaded.
+pub fn assert_rom_passes(relative: &str, max_frames: u32) {
+    let Some(dir) = test_roms_dir() else { return };
+    let path = dir.join(relative);
+    let rom = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let run = run_test(&rom, max_frames).unwrap_or_else(|e| panic!("{relative}: {e}"));
+    assert_eq!(
+        run.outcome,
+        Outcome::Passed,
+        "{relative} after {} frames printed:\n{}",
+        run.frames,
+        run.output
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn regs(values: [u8; 6]) -> Registers {
+        let [b, c, d, e, h, l] = values;
+        Registers {
+            b,
+            c,
+            d,
+            e,
+            h,
+            l,
+            ..Registers::default()
+        }
+    }
+
+    #[test]
+    fn recognizes_the_mooneye_register_patterns() {
+        assert_eq!(
+            mooneye_verdict(&regs([3, 5, 8, 13, 21, 34])),
+            Some(Outcome::Passed)
+        );
+        assert_eq!(mooneye_verdict(&regs([0x42; 6])), Some(Outcome::Failed));
+        assert_eq!(mooneye_verdict(&regs([3, 5, 8, 13, 21, 0])), None);
+    }
 }
