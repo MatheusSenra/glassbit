@@ -5,7 +5,7 @@
 A Game Boy (DMG) emulator written in Rust that runs in the browser through
 WebAssembly, built to **show how the hardware works while the game runs**.
 
-> Status: early development. Cartridges load and the memory map exists; the CPU comes next.
+> Status: early development. The CPU passes the SingleStepTests vectors and Blargg's instruction tests; there is no video yet.
 
 ## Goals
 
@@ -29,7 +29,7 @@ installs itself, including the wasm target.
 
 ```bash
 cargo test --workspace
-cargo run -p glassbit-runner -- path/to/rom.gb
+cargo run --release -p glassbit-runner -- path/to/test-rom.gb
 ```
 
 To build the web frontend, install [wasm-pack](https://rustwasm.github.io/wasm-pack/) and run:
@@ -56,11 +56,11 @@ vectors. Pass `--no-sm83` to skip the latter, which is large.
 
 - [x] **Phase 0: Foundation.** Workspace, CI, licenses, test ROM script.
 - [x] **Phase 1: Cartridge and bus.** Header parsing, ROM-only cartridge, full memory map.
-- [ ] **Phase 2: CPU.** All opcodes, validated against SingleStepTests and the individual Blargg `cpu_instrs` ROMs; serial port.
+- [x] **Phase 2: CPU.** All opcodes, validated against SingleStepTests and the individual Blargg `cpu_instrs` ROMs; serial port; ROM banking for MBC1.
 - [ ] **Phase 3: Interrupts and timer.** IME, HALT (and its bug), EI delay, DIV/TIMA/TMA/TAC. Blargg `instr_timing`, `mem_timing`, `cpu_instrs` 02 and Mooneye timer tests.
 - [ ] **Phase 4: PPU.** Modes, STAT, background, window, sprites, OAM DMA. Pixel-exact `dmg-acid2`.
 - [ ] **Phase 5: Playable web frontend.** Canvas, frame loop, keyboard, ROM loading.
-- [ ] **Phase 6: Mappers and saves.** MBC1, MBC3, MBC5, battery RAM persisted in the browser.
+- [ ] **Phase 6: Mappers and saves.** The rest of MBC1 (RAM, large ROMs), MBC3, MBC5, battery RAM persisted in the browser.
 - [ ] **Phase 7: Audio.** All four APU channels through an AudioWorklet.
 - [ ] **Phase 7.5: X-ray mode.** Live CPU, PPU, memory and interrupt panels, in English and Portuguese.
 - [ ] **Phase 8: Polish.** GitHub Pages deploy, save states, fast-forward, palettes.

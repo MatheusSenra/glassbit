@@ -48,9 +48,17 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
 
 - **Timing:** the CPU advances the rest of the hardware on every bus access
   (each read/write is one M-cycle with the tick built in), not once per
-  instruction. Needed for `mem_timing` and Mooneye.
-- **CPU is generic over a `Bus` trait** so SingleStepTests can run it against a
-  flat 64 KB RAM and compare per-cycle bus activity.
+  instruction. Needed for `mem_timing` and Mooneye. The tick happens before
+  the access.
+- **CPU is generic over the `CpuBus` trait** (`read`, `write`, `idle`; one
+  M-cycle each) so SingleStepTests can run it against a flat 64 KB RAM and
+  compare per-cycle bus activity. `Bus::peek`/`Bus::poke` access memory
+  without advancing time (debugger, tests).
+- **Opcodes are decoded by bit fields** (octal `x y z`), not a 256-entry table.
+- **STOP is a NOP** and **illegal opcodes lock the CPU** until something needs
+  more.
+- **Tests that need downloaded ROMs skip themselves** when `test-roms/` is
+  missing, and fail instead when `GLASSBIT_REQUIRE_TEST_ROMS` is set (CI).
 - **Inspection is zero cost when off:** an `Observer` trait with empty default
   methods, the emulator generic over it, `NullObserver` compiled away. Events:
   instruction executed with registers before/after, PPU mode change and LY,
