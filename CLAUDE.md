@@ -28,7 +28,9 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build -p glassbit-web --target wasm32-unknown-unknown
-wasm-pack build crates/web --target web      # also run by CI
+wasm-pack build crates/web --target web --out-dir www/pkg   # also run by CI
+python -m http.server 8765 --directory crates/web/www       # then open localhost:8765
+python scripts/make-web-images.py            # regenerate www/logo.png and favicon.png
 bash scripts/fetch-test-roms.sh              # fills test-roms/ (git-ignored)
 ```
 
@@ -42,7 +44,7 @@ bash scripts/fetch-test-roms.sh              # fills test-roms/ (git-ignored)
   verification tool.
 
 Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
-`apu`, `cartridge` (trait for MBCs).
+`cartridge` (trait for MBCs), `observer`, `demo`; `apu` comes in phase 7.
 
 ### Design decisions
 
@@ -70,6 +72,15 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
   `peek`/`poke` ignore the lockout.
 - **`run_frame` returns when VBlank starts**, or after one frame of time when
   the LCD is off. The framebuffer holds shades 0-3, not colors.
+- **The web page is plain HTML/CSS/JS in `crates/web/www`**; the wasm package
+  is built into `www/pkg` (git-ignored), so that folder is the deployable
+  site. `.claude/launch.json` serves it for previews. The preview pane does
+  not fire `requestAnimationFrame` while hidden: to test the loop there,
+  replace `window.requestAnimationFrame` with a `setTimeout` shim and
+  re-import `main.js` with a cache-busting query.
+- **`glassbit_core::demo::rom()` is a hand-assembled demo cartridge** used as
+  the page's default and for end-to-end input tests. Web key mapping: arrows,
+  X = A, Z = B, Enter = Start, Shift = Select.
 - **Opcodes are decoded by bit fields** (octal `x y z`), not a 256-entry table.
 - **STOP is a NOP** and **illegal opcodes lock the CPU** until something needs
   more.

@@ -7,7 +7,7 @@
 A Game Boy (DMG) emulator written in Rust that runs in the browser through
 WebAssembly, built to **show how the hardware works while the game runs**.
 
-> Status: early development. The CPU, interrupts, timer and video are done and tested. There is no web frontend, sound or joypad yet, so it cannot be played: for now it runs test ROMs from the command line.
+> Status: early development. It runs in the browser with video and input, for ROM-only and small MBC1 cartridges. There is no sound and there are no saves yet.
 
 <p align="center"><img src="assets/dmg-acid2.png" alt="The dmg-acid2 test rendered by Glassbit" width="320"><br><em>The dmg-acid2 PPU test, rendered by Glassbit.</em></p>
 
@@ -23,7 +23,7 @@ WebAssembly, built to **show how the hardware works while the game runs**.
 | Crate | What it is |
 | --- | --- |
 | `crates/core` (`glassbit-core`) | The emulator. No browser, window or audio dependencies. |
-| `crates/web` (`glassbit-web`) | WebAssembly frontend (`wasm-bindgen`). A placeholder for now; canvas, input, audio and saves come in phase 5. |
+| `crates/web` (`glassbit-web`) | WebAssembly frontend (`wasm-bindgen`) and the page in `www/`: canvas, frame loop, keyboard, ROM loading. |
 | `crates/runner` (`glassbit-runner`) | Headless native runner: runs a test ROM, reports whether it passed and can save the screen as a PNG. |
 
 ## Building
@@ -45,11 +45,30 @@ cargo run --release -p glassbit-runner -- "test-roms/game-boy-test-roms/blargg/c
 Add `--screenshot out.png` to save the final screen, and `--reference ref.png`
 to pass or fail by comparing the screen with an image.
 
-To build the web frontend, install [wasm-pack](https://rustwasm.github.io/wasm-pack/) and run:
+## Running in the browser
+
+Install [wasm-pack](https://rustwasm.github.io/wasm-pack/), build the wasm
+package into the page's folder and serve that folder with any static server:
 
 ```bash
-wasm-pack build crates/web --target web
+wasm-pack build crates/web --target web --out-dir www/pkg
 ```
+
+```bash
+python -m http.server 8765 --directory crates/web/www
+```
+
+Then open <http://localhost:8765>. The page starts with a built-in demo
+cartridge; load your own ROM with the button or by dropping the file on the
+page. ROMs stay in your browser and are never uploaded.
+
+| Key | Button |
+| --- | --- |
+| Arrow keys | Direction pad |
+| X | A |
+| Z | B |
+| Enter | Start |
+| Shift | Select |
 
 ## Test ROMs
 
@@ -91,7 +110,7 @@ depend on I/O registers and a mapper not implemented yet.
 - [x] **Phase 2: CPU.** All opcodes, validated against SingleStepTests and the individual Blargg `cpu_instrs` ROMs; serial port; ROM banking for MBC1.
 - [x] **Phase 3: Interrupts and timer.** IME, HALT (and its bug), EI delay, DIV/TIMA/TMA/TAC. Blargg `instr_timing`, `mem_timing`, all of `cpu_instrs` and Mooneye timer tests.
 - [x] **Phase 4: PPU.** Modes, STAT, background, window, sprites, OAM DMA. Pixel-exact `dmg-acid2`.
-- [ ] **Phase 5: Playable web frontend.** Canvas, frame loop, keyboard, ROM loading.
+- [x] **Phase 5: Playable web frontend.** Canvas, frame loop, keyboard, ROM loading, joypad, built-in demo cartridge.
 - [ ] **Phase 6: Mappers and saves.** The rest of MBC1 (RAM, large ROMs), MBC3, MBC5, battery RAM persisted in the browser.
 - [ ] **Phase 7: Audio.** All four APU channels through an AudioWorklet.
 - [ ] **Phase 7.5: X-ray mode.** Live CPU, PPU, memory and interrupt panels, in English and Portuguese.
