@@ -13,38 +13,43 @@
       <img src="logo.png" alt="Glassbit: transparent emulation" width="375" height="114" />
     </header>
 
-    <main>
-      <div id="screen-frame">
-        <canvas id="screen" width="160" height="144" tabindex="0" aria-label="Game Boy screen"></canvas>
-        <div id="drop-hint" hidden>Drop the ROM to load it</div>
-      </div>
+    <div id="layout">
+      <main>
+        <div id="screen-frame">
+          <canvas id="screen" width="160" height="144" tabindex="0" aria-label="Game Boy screen"></canvas>
+          <div id="drop-hint" data-i18n="drop.hint" hidden></div>
+        </div>
 
-      <p id="status" role="status">Loading…</p>
-      <p id="save-status" class="note" role="status"></p>
+        <p id="status" role="status"></p>
+        <p id="save-status" class="note" role="status"></p>
 
-      <div id="controls">
-        <label class="button" for="rom-input">Open ROM…</label>
-        <input id="rom-input" type="file" accept=".gb,.gbc,application/octet-stream" hidden />
-        <button id="pause" type="button">Pause</button>
-        <button id="mute" type="button">Mute</button>
-        <button id="demo" type="button">Demo</button>
-      </div>
+        <div id="controls">
+          <label class="button" for="rom-input" data-i18n="button.open"></label>
+          <input id="rom-input" type="file" accept=".gb,.gbc,application/octet-stream" hidden />
+          <button id="pause" type="button" data-i18n="button.pause"></button>
+          <button id="mute" type="button" data-i18n="button.mute"></button>
+          <button id="demo" type="button" data-i18n="button.demo"></button>
+          <button id="xray-toggle" type="button" aria-controls="xray" aria-expanded="false" data-i18n="button.xray"></button>
+          <label class="inline">
+            <span data-i18n="label.language"></span>
+            <select id="language"></select>
+          </label>
+        </div>
 
-      <table id="keys">
-        <caption>Keyboard</caption>
-        <tr><th>Arrow keys</th><td>Direction pad</td></tr>
-        <tr><th>X</th><td>A</td></tr>
-        <tr><th>Z</th><td>B</td></tr>
-        <tr><th>Enter</th><td>Start</td></tr>
-        <tr><th>Shift</th><td>Select</td></tr>
-      </table>
+        <table id="keys">
+          <caption data-i18n="keys.caption"></caption>
+          <tr><th data-i18n="keys.arrows"></th><td data-i18n="keys.dpad"></td></tr>
+          <tr><th>X</th><td>A</td></tr>
+          <tr><th>Z</th><td>B</td></tr>
+          <tr><th>Enter</th><td>Start</td></tr>
+          <tr><th>Shift</th><td>Select</td></tr>
+        </table>
 
-      <p class="note">
-        ROMs are read by your browser and never uploaded. ROM-only, MBC1,
-        MBC3 and MBC5 cartridges work. Sound starts after your first click
-        or key press.
-      </p>
-    </main>
+        <p class="note" data-i18n="note.privacy"></p>
+      </main>
+
+      <aside id="xray" hidden></aside>
+    </div>
 
     <script type="module" src="main.js"></script>
   </body>

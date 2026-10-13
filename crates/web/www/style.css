@@ -144,3 +144,213 @@ button:hover,
   font-size: 0.85rem;
   text-align: center;
 }
+
+/* Layout: the game on the left, the X-ray panel beside it when open. */
+
+#layout {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 1.5rem;
+  width: 100%;
+}
+
+label.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+}
+
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
+
+/* X-ray panel */
+
+#xray {
+  flex: 1 1 26rem;
+  max-width: 40rem;
+  min-width: 0;
+  padding: 0.75rem 1rem 1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+#xray[hidden] {
+  display: none;
+}
+
+#xray h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.15rem;
+  color: var(--accent);
+}
+
+#xray h3 {
+  margin: 0.9rem 0 0.3rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+#xray .note {
+  text-align: left;
+}
+
+#xray a {
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+#xray code,
+.xray-code,
+.xray-table td:first-child {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+#xray-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.6rem 0 0.3rem;
+}
+
+.xray-section {
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+
+.xray-section summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.xray-section summary span::before {
+  content: "▸ ";
+  color: var(--muted);
+}
+
+.xray-section[open] summary span::before {
+  content: "▾ ";
+}
+
+.xray-last {
+  margin: 0;
+}
+
+.xray-last code {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.xray-registers {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(6.2rem, 1fr));
+  gap: 0.35rem;
+}
+
+.xray-registers div {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.xray-registers span {
+  color: var(--muted);
+}
+
+/* What the last step changed. */
+#xray .changed {
+  border-color: #ffb454;
+  color: #ffd08a;
+}
+
+.xray-list {
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.xray-list li {
+  white-space: pre-wrap;
+}
+
+.xray-code,
+.xray-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.xray-code td,
+.xray-table td,
+.xray-table th {
+  padding: 0.12rem 0.6rem 0.12rem 0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.xray-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.xray-code td:nth-child(1),
+.xray-code td:nth-child(2) {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.xray-code tr.current td {
+  color: var(--accent);
+}
+
+.xray-table td.on {
+  color: var(--accent);
+}
+
+.xray-table td.off,
+.xray-table tr.dropped td {
+  color: var(--muted);
+}
+
+#xray canvas {
+  display: block;
+  max-width: 100%;
+  image-rendering: pixelated;
+  border: 1px solid var(--border);
+}
+
+#xray-tilemap {
+  width: 256px;
+}
+
+#xray-tiles {
+  width: 256px;
+}
+
+#layout > main {
+  flex: 0 1 34rem;
+  width: auto;
+}

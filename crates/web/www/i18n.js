@@ -1,0 +1,473 @@
+// Simple internationalization: two dictionaries and a lookup function.
+//
+// Static text in the HTML carries a `data-i18n="key"` attribute and is
+// filled in by `translatePage`. Text built in JavaScript calls `t(key)`.
+// Placeholders `{0}`, `{1}`... are replaced by the extra arguments.
+
+const STRINGS = {
+  en: {
+    // Page
+    "page.description": "A Game Boy emulator that shows how the hardware works.",
+    "button.open": "Open ROM…",
+    "button.pause": "Pause",
+    "button.resume": "Resume",
+    "button.mute": "Mute",
+    "button.unmute": "Unmute",
+    "button.demo": "Demo",
+    "button.xray": "X-ray",
+    "button.xrayClose": "Close X-ray",
+    "label.language": "Language",
+    "drop.hint": "Drop the ROM to load it",
+    "keys.caption": "Keyboard",
+    "keys.arrows": "Arrow keys",
+    "keys.dpad": "Direction pad",
+    "note.privacy":
+      "ROMs are read by your browser and never uploaded. ROM-only, MBC1, MBC3 and MBC5 cartridges work. Sound starts after your first click or key press.",
+    "status.loading": "Loading…",
+    "status.demo": "Built-in demo: move the ball with the arrow keys, hold X to invert.",
+    "status.rom": "{0} ({1})",
+    "status.loadError": "Could not load {0}: {1}",
+    "save.stored": "Game save stored in this browser at {0}.",
+    "save.storeError": "Could not store the game save: {0}",
+    "save.restored": "Game save restored from this browser.",
+    "save.available": "This cartridge can save; progress is kept in this browser.",
+    "save.unavailable": "Saves are unavailable: {0}",
+
+    // X-ray: general
+    "xray.title": "X-ray",
+    "xray.intro": "What the hardware is doing right now. Pause and step to follow it one instruction at a time.",
+    "xray.docs": "Pan Docs",
+    "xray.stepInstruction": "Step instruction",
+    "xray.stepLine": "Step line",
+    "xray.stepFrame": "Step frame",
+    "xray.running": "Running: values are a snapshot, refreshed a few times per second.",
+    "xray.paused": "Paused.",
+
+    // X-ray: CPU
+    "cpu.title": "CPU",
+    "cpu.registers": "Registers",
+    "cpu.flags": "Flags",
+    "cpu.flag.z": "Z: the last result was zero",
+    "cpu.flag.n": "N: the last operation was a subtraction",
+    "cpu.flag.h": "H: carry out of the low 4 bits",
+    "cpu.flag.c": "C: carry out of the whole result",
+    "cpu.ime": "IME: interrupts {0}",
+    "cpu.ime.on": "enabled",
+    "cpu.ime.off": "disabled",
+    "cpu.halted": "HALT: asleep until an interrupt",
+    "cpu.lastExecuted": "Just executed",
+    "cpu.none": "Step an instruction to see what it did.",
+    "cpu.next": "Next instructions",
+    "cpu.changed": "Highlighted values changed in the last step.",
+
+    // X-ray: PPU
+    "ppu.title": "PPU (video)",
+    "ppu.mode": "Mode",
+    "ppu.mode.0": "0: HBlank (waiting for the line to end)",
+    "ppu.mode.1": "1: VBlank (between frames)",
+    "ppu.mode.2": "2: OAM scan (picking this line's sprites)",
+    "ppu.mode.3": "3: drawing pixels",
+    "ppu.lcdOff": "The LCD is switched off",
+    "ppu.line": "Line (LY)",
+    "ppu.scroll": "Scroll (SCX, SCY)",
+    "ppu.window": "Window (WX, WY)",
+    "ppu.tilemap": "Background map",
+    "ppu.tilemapHint": "The whole 256x256 background. The rectangle is the part the screen shows.",
+    "ppu.tiles": "Tiles in video memory",
+    "ppu.tilesHint": "All 384 tiles the game has loaded, 8x8 pixels each.",
+    "ppu.sprites": "Sprites on this line",
+    "ppu.spritesNone": "No sprites on line {0}.",
+    "ppu.spritesLimit": "Only the first 10 are drawn.",
+    "ppu.sprite.slot": "Slot",
+    "ppu.sprite.tile": "Tile",
+    "ppu.sprite.flags": "Flags",
+
+    // X-ray: memory
+    "mem.title": "Memory",
+    "mem.map": "Memory map",
+    "mem.range": "Addresses",
+    "mem.region": "Region",
+    "mem.pointers": "Pointing here",
+    "mem.romBank": "bank {0}",
+    "mem.rom0": "Cartridge ROM, fixed bank",
+    "mem.romN": "Cartridge ROM, switchable bank",
+    "mem.vram": "Video RAM (tiles and maps)",
+    "mem.sram": "Cartridge RAM (saves)",
+    "mem.wram": "Work RAM",
+    "mem.echo": "Echo of work RAM",
+    "mem.oam": "Sprite table (OAM)",
+    "mem.unusable": "Unusable",
+    "mem.io": "Hardware registers",
+    "mem.hram": "High RAM",
+    "mem.ie": "Interrupt enable",
+    "mem.io.title": "Hardware registers",
+    "mem.io.name": "Name",
+    "mem.io.value": "Value",
+    "mem.io.meaning": "What it is",
+    "mem.writes": "Latest writes to registers",
+    "mem.writesNone": "None recorded yet.",
+
+    // X-ray: interrupts and timer
+    "int.title": "Interrupts and timer",
+    "int.source": "Source",
+    "int.vector": "Handler",
+    "int.enabled": "Enabled (IE)",
+    "int.requested": "Requested (IF)",
+    "int.vblank": "VBlank",
+    "int.stat": "STAT (video events)",
+    "int.timer": "Timer",
+    "int.serial": "Serial",
+    "int.joypad": "Joypad",
+    "int.log": "Latest interrupts served",
+    "int.logNone": "None recorded yet.",
+    "int.logEntry": "{0}: frame {1}, line {2}",
+    "int.timer.title": "Timer",
+    "int.timer.state": "TIMA counts at {0} Hz",
+    "int.timer.off": "TIMA is stopped",
+
+    // I/O registers
+    "io.P1": "Joypad: selects a button group and reads it",
+    "io.SB": "Serial data byte",
+    "io.SC": "Serial control",
+    "io.DIV": "Divider: counts up at 16384 Hz",
+    "io.TIMA": "Timer counter; interrupts on overflow",
+    "io.TMA": "Value TIMA restarts from",
+    "io.TAC": "Timer on/off and speed",
+    "io.IF": "Interrupts requested",
+    "io.NR50": "Master volume, left and right",
+    "io.NR51": "Which channels go to which side",
+    "io.NR52": "Sound on/off and channel status",
+    "io.LCDC": "LCD control: what is switched on",
+    "io.STAT": "LCD status: mode and interrupt sources",
+    "io.SCY": "Background scroll Y",
+    "io.SCX": "Background scroll X",
+    "io.LY": "Line being drawn (0-153)",
+    "io.LYC": "Line to compare LY with",
+    "io.DMA": "Starts a copy into the sprite table",
+    "io.BGP": "Background palette",
+    "io.OBP0": "Sprite palette 0",
+    "io.OBP1": "Sprite palette 1",
+    "io.WY": "Window position Y",
+    "io.WX": "Window position X plus 7",
+    "io.IE": "Interrupts enabled",
+
+    // Conditions
+    "cond.NZ": "the zero flag is clear",
+    "cond.Z": "the zero flag is set",
+    "cond.NC": "the carry flag is clear",
+    "cond.C": "the carry flag is set",
+
+    // Instruction explanations
+    "op.NOP": "Does nothing for one cycle.",
+    "op.LD": "Copies {1} into {0}.",
+    "op.LDH": "Copies {1} into {0}, using the short form for the hardware register page ($FFxx).",
+    "op.INC": "Adds 1 to {0}.",
+    "op.DEC": "Subtracts 1 from {0}.",
+    "op.ADD": "Adds {1} to {0}.",
+    "op.ADC": "Adds {1} and the carry flag to {0}.",
+    "op.SUB": "Subtracts {1} from {0}.",
+    "op.SBC": "Subtracts {1} and the carry flag from {0}.",
+    "op.AND": "Keeps in {0} only the bits also set in {1}.",
+    "op.XOR": "Flips in {0} the bits set in {1}. With itself, this zeroes it.",
+    "op.OR": "Sets in {0} the bits set in {1}.",
+    "op.CP": "Compares {0} with {1}: subtracts, but keeps only the flags.",
+    "op.JR": "Jumps a short distance, to {0}.",
+    "op.JR.cond": "Jumps to {1} if {0}.",
+    "op.JP": "Jumps to {0}.",
+    "op.JP.cond": "Jumps to {1} if {0}.",
+    "op.CALL": "Calls the routine at {0}: saves the return address on the stack and jumps.",
+    "op.CALL.cond": "Calls the routine at {1} if {0}.",
+    "op.RET": "Returns from a routine: takes the return address from the stack.",
+    "op.RET.cond": "Returns from the routine if {0}.",
+    "op.RETI": "Returns from an interrupt handler and enables interrupts again.",
+    "op.RST": "Calls the fixed routine at {0}, a one-byte CALL.",
+    "op.PUSH": "Saves {0} on the stack.",
+    "op.POP": "Takes the top of the stack into {0}.",
+    "op.HALT": "Sleeps until an interrupt is pending, saving power.",
+    "op.STOP": "Enters the deepest sleep, until a button is pressed.",
+    "op.DI": "Disables interrupts.",
+    "op.EI": "Enables interrupts, after the next instruction.",
+    "op.DAA": "Fixes A after adding or subtracting decimal (BCD) numbers.",
+    "op.CPL": "Flips every bit of A.",
+    "op.SCF": "Sets the carry flag.",
+    "op.CCF": "Flips the carry flag.",
+    "op.RLCA": "Rotates A one bit to the left.",
+    "op.RRCA": "Rotates A one bit to the right.",
+    "op.RLA": "Rotates A left through the carry flag.",
+    "op.RRA": "Rotates A right through the carry flag.",
+    "op.RLC": "Rotates {0} one bit to the left.",
+    "op.RRC": "Rotates {0} one bit to the right.",
+    "op.RL": "Rotates {0} left through the carry flag.",
+    "op.RR": "Rotates {0} right through the carry flag.",
+    "op.SLA": "Shifts {0} left: multiplies by 2.",
+    "op.SRA": "Shifts {0} right keeping its sign: divides by 2.",
+    "op.SRL": "Shifts {0} right: divides by 2.",
+    "op.SWAP": "Swaps the two halves (nibbles) of {0}.",
+    "op.BIT": "Tests bit {0} of {1}; the zero flag tells the answer.",
+    "op.RES": "Clears bit {0} of {1}.",
+    "op.SET": "Sets bit {0} of {1}.",
+    "op.ILLEGAL": "Not a valid instruction: the real CPU locks up here.",
+    "op.registerNote": " {0} is {1}.",
+  },
+
+  pt: {
+    // Página
+    "page.description": "Um emulador de Game Boy que mostra como o hardware funciona.",
+    "button.open": "Abrir ROM…",
+    "button.pause": "Pausar",
+    "button.resume": "Continuar",
+    "button.mute": "Silenciar",
+    "button.unmute": "Ativar som",
+    "button.demo": "Demo",
+    "button.xray": "Raio-X",
+    "button.xrayClose": "Fechar raio-X",
+    "label.language": "Idioma",
+    "drop.hint": "Solte a ROM para carregar",
+    "keys.caption": "Teclado",
+    "keys.arrows": "Setas",
+    "keys.dpad": "Direcional",
+    "note.privacy":
+      "As ROMs são lidas pelo seu navegador e nunca são enviadas. Funcionam cartuchos ROM-only, MBC1, MBC3 e MBC5. O som começa depois do primeiro clique ou tecla.",
+    "status.loading": "Carregando…",
+    "status.demo": "Demo embutido: mova a bola com as setas, segure X para inverter as cores.",
+    "status.rom": "{0} ({1})",
+    "status.loadError": "Não foi possível carregar {0}: {1}",
+    "save.stored": "Save do jogo gravado neste navegador às {0}.",
+    "save.storeError": "Não foi possível gravar o save do jogo: {0}",
+    "save.restored": "Save do jogo restaurado deste navegador.",
+    "save.available": "Este cartucho salva; o progresso fica guardado neste navegador.",
+    "save.unavailable": "Saves indisponíveis: {0}",
+
+    // Raio-X: geral
+    "xray.title": "Raio-X",
+    "xray.intro": "O que o hardware está fazendo agora. Pause e avance para acompanhar uma instrução de cada vez.",
+    "xray.docs": "Pan Docs",
+    "xray.stepInstruction": "Avançar instrução",
+    "xray.stepLine": "Avançar linha",
+    "xray.stepFrame": "Avançar frame",
+    "xray.running": "Rodando: os valores são um instantâneo, atualizado algumas vezes por segundo.",
+    "xray.paused": "Pausado.",
+
+    // Raio-X: CPU
+    "cpu.title": "CPU",
+    "cpu.registers": "Registradores",
+    "cpu.flags": "Flags",
+    "cpu.flag.z": "Z: o último resultado foi zero",
+    "cpu.flag.n": "N: a última operação foi uma subtração",
+    "cpu.flag.h": "H: vai-um dos 4 bits baixos",
+    "cpu.flag.c": "C: vai-um do resultado inteiro",
+    "cpu.ime": "IME: interrupções {0}",
+    "cpu.ime.on": "habilitadas",
+    "cpu.ime.off": "desabilitadas",
+    "cpu.halted": "HALT: dormindo até uma interrupção",
+    "cpu.lastExecuted": "Acabou de executar",
+    "cpu.none": "Avance uma instrução para ver o que ela fez.",
+    "cpu.next": "Próximas instruções",
+    "cpu.changed": "Os valores destacados mudaram no último passo.",
+
+    // Raio-X: PPU
+    "ppu.title": "PPU (vídeo)",
+    "ppu.mode": "Modo",
+    "ppu.mode.0": "0: HBlank (esperando a linha terminar)",
+    "ppu.mode.1": "1: VBlank (entre frames)",
+    "ppu.mode.2": "2: varredura da OAM (escolhendo os sprites da linha)",
+    "ppu.mode.3": "3: desenhando pixels",
+    "ppu.lcdOff": "O LCD está desligado",
+    "ppu.line": "Linha (LY)",
+    "ppu.scroll": "Rolagem (SCX, SCY)",
+    "ppu.window": "Window (WX, WY)",
+    "ppu.tilemap": "Mapa do background",
+    "ppu.tilemapHint": "O background inteiro, de 256x256. O retângulo é a parte que a tela mostra.",
+    "ppu.tiles": "Tiles na memória de vídeo",
+    "ppu.tilesHint": "Os 384 tiles que o jogo carregou, cada um com 8x8 pixels.",
+    "ppu.sprites": "Sprites nesta linha",
+    "ppu.spritesNone": "Nenhum sprite na linha {0}.",
+    "ppu.spritesLimit": "Só os 10 primeiros são desenhados.",
+    "ppu.sprite.slot": "Posição",
+    "ppu.sprite.tile": "Tile",
+    "ppu.sprite.flags": "Atributos",
+
+    // Raio-X: memória
+    "mem.title": "Memória",
+    "mem.map": "Mapa de memória",
+    "mem.range": "Endereços",
+    "mem.region": "Região",
+    "mem.pointers": "Apontando para cá",
+    "mem.romBank": "banco {0}",
+    "mem.rom0": "ROM do cartucho, banco fixo",
+    "mem.romN": "ROM do cartucho, banco comutável",
+    "mem.vram": "RAM de vídeo (tiles e mapas)",
+    "mem.sram": "RAM do cartucho (saves)",
+    "mem.wram": "RAM de trabalho",
+    "mem.echo": "Espelho da RAM de trabalho",
+    "mem.oam": "Tabela de sprites (OAM)",
+    "mem.unusable": "Inutilizável",
+    "mem.io": "Registradores de hardware",
+    "mem.hram": "RAM alta",
+    "mem.ie": "Habilitação de interrupções",
+    "mem.io.title": "Registradores de hardware",
+    "mem.io.name": "Nome",
+    "mem.io.value": "Valor",
+    "mem.io.meaning": "O que é",
+    "mem.writes": "Últimas escritas em registradores",
+    "mem.writesNone": "Nenhuma registrada ainda.",
+
+    // Raio-X: interrupções e timer
+    "int.title": "Interrupções e timer",
+    "int.source": "Fonte",
+    "int.vector": "Rotina",
+    "int.enabled": "Habilitada (IE)",
+    "int.requested": "Pedida (IF)",
+    "int.vblank": "VBlank",
+    "int.stat": "STAT (eventos de vídeo)",
+    "int.timer": "Timer",
+    "int.serial": "Serial",
+    "int.joypad": "Botões",
+    "int.log": "Últimas interrupções atendidas",
+    "int.logNone": "Nenhuma registrada ainda.",
+    "int.logEntry": "{0}: frame {1}, linha {2}",
+    "int.timer.title": "Timer",
+    "int.timer.state": "TIMA conta a {0} Hz",
+    "int.timer.off": "TIMA está parado",
+
+    // Registradores de I/O
+    "io.P1": "Botões: seleciona um grupo e lê o estado",
+    "io.SB": "Byte de dados da serial",
+    "io.SC": "Controle da serial",
+    "io.DIV": "Divisor: sobe a 16384 Hz",
+    "io.TIMA": "Contador do timer; interrompe ao estourar",
+    "io.TMA": "Valor de onde TIMA recomeça",
+    "io.TAC": "Liga/desliga e velocidade do timer",
+    "io.IF": "Interrupções pedidas",
+    "io.NR50": "Volume geral, esquerda e direita",
+    "io.NR51": "Quais canais vão para cada lado",
+    "io.NR52": "Liga/desliga o som e estado dos canais",
+    "io.LCDC": "Controle do LCD: o que está ligado",
+    "io.STAT": "Estado do LCD: modo e fontes de interrupção",
+    "io.SCY": "Rolagem Y do background",
+    "io.SCX": "Rolagem X do background",
+    "io.LY": "Linha sendo desenhada (0-153)",
+    "io.LYC": "Linha para comparar com LY",
+    "io.DMA": "Inicia uma cópia para a tabela de sprites",
+    "io.BGP": "Paleta do background",
+    "io.OBP0": "Paleta de sprites 0",
+    "io.OBP1": "Paleta de sprites 1",
+    "io.WY": "Posição Y da window",
+    "io.WX": "Posição X da window mais 7",
+    "io.IE": "Interrupções habilitadas",
+
+    // Condições
+    "cond.NZ": "a flag de zero estiver desligada",
+    "cond.Z": "a flag de zero estiver ligada",
+    "cond.NC": "a flag de carry estiver desligada",
+    "cond.C": "a flag de carry estiver ligada",
+
+    // Explicações das instruções
+    "op.NOP": "Não faz nada por um ciclo.",
+    "op.LD": "Copia {1} para {0}.",
+    "op.LDH": "Copia {1} para {0}, usando a forma curta para a página dos registradores de hardware ($FFxx).",
+    "op.INC": "Soma 1 a {0}.",
+    "op.DEC": "Subtrai 1 de {0}.",
+    "op.ADD": "Soma {1} a {0}.",
+    "op.ADC": "Soma {1} e a flag de carry a {0}.",
+    "op.SUB": "Subtrai {1} de {0}.",
+    "op.SBC": "Subtrai {1} e a flag de carry de {0}.",
+    "op.AND": "Mantém em {0} só os bits que também estão ligados em {1}.",
+    "op.XOR": "Inverte em {0} os bits ligados em {1}. Consigo mesmo, isso zera o valor.",
+    "op.OR": "Liga em {0} os bits ligados em {1}.",
+    "op.CP": "Compara {0} com {1}: subtrai, mas guarda só as flags.",
+    "op.JR": "Salta uma distância curta, para {0}.",
+    "op.JR.cond": "Salta para {1} se {0}.",
+    "op.JP": "Salta para {0}.",
+    "op.JP.cond": "Salta para {1} se {0}.",
+    "op.CALL": "Chama a rotina em {0}: guarda o endereço de retorno na pilha e salta.",
+    "op.CALL.cond": "Chama a rotina em {1} se {0}.",
+    "op.RET": "Retorna de uma rotina: pega o endereço de retorno da pilha.",
+    "op.RET.cond": "Retorna da rotina se {0}.",
+    "op.RETI": "Retorna de uma rotina de interrupção e habilita as interrupções de novo.",
+    "op.RST": "Chama a rotina fixa em {0}, um CALL de um byte.",
+    "op.PUSH": "Guarda {0} na pilha.",
+    "op.POP": "Tira o topo da pilha para {0}.",
+    "op.HALT": "Dorme até haver uma interrupção pendente, economizando energia.",
+    "op.STOP": "Entra no sono mais profundo, até um botão ser apertado.",
+    "op.DI": "Desabilita as interrupções.",
+    "op.EI": "Habilita as interrupções, depois da próxima instrução.",
+    "op.DAA": "Corrige A depois de somar ou subtrair números decimais (BCD).",
+    "op.CPL": "Inverte todos os bits de A.",
+    "op.SCF": "Liga a flag de carry.",
+    "op.CCF": "Inverte a flag de carry.",
+    "op.RLCA": "Gira A um bit para a esquerda.",
+    "op.RRCA": "Gira A um bit para a direita.",
+    "op.RLA": "Gira A para a esquerda passando pela flag de carry.",
+    "op.RRA": "Gira A para a direita passando pela flag de carry.",
+    "op.RLC": "Gira {0} um bit para a esquerda.",
+    "op.RRC": "Gira {0} um bit para a direita.",
+    "op.RL": "Gira {0} para a esquerda passando pela flag de carry.",
+    "op.RR": "Gira {0} para a direita passando pela flag de carry.",
+    "op.SLA": "Desloca {0} para a esquerda: multiplica por 2.",
+    "op.SRA": "Desloca {0} para a direita mantendo o sinal: divide por 2.",
+    "op.SRL": "Desloca {0} para a direita: divide por 2.",
+    "op.SWAP": "Troca as duas metades (nibbles) de {0}.",
+    "op.BIT": "Testa o bit {0} de {1}; a flag de zero dá a resposta.",
+    "op.RES": "Desliga o bit {0} de {1}.",
+    "op.SET": "Liga o bit {0} de {1}.",
+    "op.ILLEGAL": "Não é uma instrução válida: a CPU real trava aqui.",
+    "op.registerNote": " {0} é {1}.",
+  },
+};
+
+const STORAGE_KEY = "glassbit-language";
+const listeners = [];
+
+function detect() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored in STRINGS) return stored;
+  } catch {
+    // Storage can be blocked; fall through to the browser's language.
+  }
+  return navigator.language?.toLowerCase().startsWith("pt") ? "pt" : "en";
+}
+
+let language = detect();
+
+export const LANGUAGES = Object.keys(STRINGS);
+
+export function getLanguage() {
+  return language;
+}
+
+export function setLanguage(next) {
+  if (!(next in STRINGS) || next === language) return;
+  language = next;
+  try {
+    localStorage.setItem(STORAGE_KEY, next);
+  } catch {
+    // Not being able to remember the choice is harmless.
+  }
+  for (const listener of listeners) listener();
+}
+
+/** Calls `listener` whenever the language changes. */
+export function onLanguageChange(listener) {
+  listeners.push(listener);
+}
+
+/** Looks up `key`, filling `{0}`, `{1}`... with the extra arguments. */
+export function t(key, ...args) {
+  const template = STRINGS[language][key] ?? STRINGS.en[key] ?? key;
+  return template.replace(/\{(\d)\}/g, (_, index) => args[index] ?? "");
+}
+
+/** Whether a translation exists for `key`. */
+export function has(key) {
+  return key in STRINGS.en;
+}
+
+/** Fills every element under `root` that has a `data-i18n` attribute. */
+export function translatePage(root = document) {
+  document.documentElement.lang = language;
+  for (const element of root.querySelectorAll("[data-i18n]")) {
+    element.textContent = t(element.dataset.i18n);
+  }
+}
