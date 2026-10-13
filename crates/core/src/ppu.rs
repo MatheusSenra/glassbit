@@ -96,7 +96,9 @@ struct SpritePixel {
 }
 
 pub struct Ppu {
-    vram: [u8; VRAM_SIZE],
+    // The two large buffers live on the heap so that moving a `Ppu` (and
+    // everything that contains one) stays cheap.
+    vram: Box<[u8]>,
     oam: [u8; OAM_SIZE],
     lcdc: u8,
     /// The interrupt source bits of STAT (bits 3-6).
@@ -130,14 +132,14 @@ pub struct Ppu {
     interrupts: u8,
     frame_ready: bool,
     /// One shade (0 = lightest, 3 = darkest) per pixel.
-    framebuffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT],
+    framebuffer: Box<[u8]>,
 }
 
 impl Ppu {
     /// A PPU in the post-boot state: LCD on, at the top of a frame.
     pub fn new() -> Self {
         Self {
-            vram: [0; VRAM_SIZE],
+            vram: vec![0; VRAM_SIZE].into_boxed_slice(),
             oam: [0; OAM_SIZE],
             lcdc: 0x91,
             stat_sources: 0x00,
@@ -159,7 +161,7 @@ impl Ppu {
             window_line: 0,
             interrupts: 0,
             frame_ready: false,
-            framebuffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT],
+            framebuffer: vec![0; SCREEN_WIDTH * SCREEN_HEIGHT].into_boxed_slice(),
         }
     }
 

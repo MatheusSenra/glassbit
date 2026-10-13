@@ -43,7 +43,8 @@ const HRAM_SIZE: usize = 0x7F;
 /// Everything the CPU can address.
 pub struct Bus<O: Observer = NullObserver> {
     cartridge: Cartridge,
-    wram: [u8; WRAM_SIZE],
+    /// On the heap so that moving a `Bus` stays cheap.
+    wram: Box<[u8]>,
     /// I/O addresses that no component claims. They read `0xFF` until
     /// something is written, which only matters to badly behaved programs.
     io: [u8; IO_SIZE],
@@ -80,7 +81,7 @@ impl<O: Observer> Bus<O> {
     pub fn new(cartridge: Cartridge, observer: O) -> Self {
         Self {
             cartridge,
-            wram: [0; WRAM_SIZE],
+            wram: vec![0; WRAM_SIZE].into_boxed_slice(),
             io: [0xFF; IO_SIZE],
             hram: [0; HRAM_SIZE],
             // The boot ROM leaves a VBlank request behind.
@@ -98,6 +99,33 @@ impl<O: Observer> Bus<O> {
             dma_index: 0,
             dma_copying: false,
             cycles: 0,
+            observer,
+        }
+    }
+
+    /// Swaps the observer for one of another type, keeping all hardware
+    /// state. This is how inspection is switched on and off at run time
+    /// while still costing nothing when off.
+    pub fn with_observer<N: Observer>(self, observer: N) -> Bus<N> {
+        Bus {
+            cartridge: self.cartridge,
+            wram: self.wram,
+            io: self.io,
+            hram: self.hram,
+            interrupt_flag: self.interrupt_flag,
+            interrupt_enable: self.interrupt_enable,
+            joypad: self.joypad,
+            serial: self.serial,
+            timer: self.timer,
+            ppu: self.ppu,
+            apu: self.apu,
+            dma_page: self.dma_page,
+            dma_delay: self.dma_delay,
+            dma_active: self.dma_active,
+            dma_source: self.dma_source,
+            dma_index: self.dma_index,
+            dma_copying: self.dma_copying,
+            cycles: self.cycles,
             observer,
         }
     }

@@ -9,6 +9,7 @@ pub mod bus;
 pub mod cartridge;
 pub mod cpu;
 pub mod demo;
+pub mod disasm;
 pub mod interrupts;
 pub mod joypad;
 pub mod observer;
@@ -29,6 +30,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SCREEN_WIDTH: usize = 160;
 /// Visible screen height in pixels.
 pub const SCREEN_HEIGHT: usize = 144;
+
+/// M-cycles in one scanline (456 clock ticks).
+pub const CYCLES_PER_LINE: u64 = 114;
 
 /// M-cycles in one video frame: 154 scanlines of 114 M-cycles each, which at
 /// 1,048,576 M-cycles per second gives about 59.73 frames per second.
@@ -82,6 +86,11 @@ impl<O: Observer> GameBoy<O> {
         self.bus.cycles()
     }
 
+    /// The ROM bank the cartridge mapper currently shows at `0x4000`.
+    pub fn rom_bank(&self) -> u16 {
+        self.bus.cartridge().rom_bank()
+    }
+
     /// Returns the bytes sent through the serial port since the last call.
     pub fn take_serial_output(&mut self) -> Vec<u8> {
         self.bus.take_serial_output()
@@ -93,6 +102,37 @@ impl<O: Observer> GameBoy<O> {
 
     pub fn observer_mut(&mut self) -> &mut O {
         &mut self.bus.observer
+    }
+
+    /// Replaces the observer with one of another type without disturbing
+    /// the running game: switch to a recording observer to inspect, and
+    /// back to [`NullObserver`] for full speed.
+    pub fn into_observed<N: Observer>(self, observer: N) -> GameBoy<N> {
+        GameBoy {
+            cpu: self.cpu,
+            bus: self.bus.with_observer(observer),
+            audio: self.audio,
+        }
+    }
+
+    /// The PPU, for reading its mode and current line.
+    pub fn ppu(&self) -> &ppu::Ppu {
+        self.bus.ppu()
+    }
+
+    /// Decodes the instruction at `addr`.
+    pub fn disassemble(&self, addr: u16) -> disasm::Instruction {
+        disasm::disassemble(|addr| self.bus.peek(addr), addr)
+    }
+
+    /// Steps until the PPU moves to another scanline. With the LCD off,
+    /// steps for the duration of one line instead.
+    pub fn step_line(&mut self) {
+        let line = self.bus.ppu().ly();
+        let limit = self.bus.cycles() + CYCLES_PER_LINE;
+        while self.bus.ppu().ly() == line && self.bus.cycles() < limit {
+            self.step();
+        }
     }
 
     /// Executes one CPU instruction, advancing all hardware along with it.
@@ -405,6 +445,54 @@ mod tests {
             (values as f64 - expected).abs() < 4.0,
             "{values} vs {expected}"
         );
+    }
+
+    #[test]
+    fn observer_can_be_swapped_without_disturbing_the_game() {
+        let rom = demo::rom();
+        let mut plain = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        let mut swapped = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        for _ in 0..8 {
+            plain.run_frame();
+            swapped.run_frame();
+        }
+
+        // Watch four instructions, then go back to not watching.
+        let mut watched = swapped.into_observed(Trace::default());
+        for _ in 0..4 {
+            watched.step();
+            plain.step();
+        }
+        assert_eq!(watched.observer().pcs.len(), 4);
+        let mut swapped = watched.into_observed(NullObserver);
+
+        for _ in 0..8 {
+            plain.run_frame();
+            swapped.run_frame();
+        }
+        assert_eq!(swapped.cycles(), plain.cycles());
+        assert_eq!(swapped.cpu(), plain.cpu());
+        assert_eq!(swapped.framebuffer(), plain.framebuffer());
+    }
+
+    #[test]
+    fn step_line_stops_at_the_next_scanline() {
+        let rom = rom_running(&[]);
+        let mut gb = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        for expected in 1..=5 {
+            gb.step_line();
+            assert_eq!(gb.ppu().ly(), expected);
+        }
+    }
+
+    #[test]
+    fn disassembles_code_in_the_cartridge() {
+        let gb = gameboy();
+        let rom = rom_running(&[0x3E, 0x42]);
+        let running = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(running.disassemble(0x0101).to_string(), "JP $0150");
+        assert_eq!(running.disassemble(0x0150).to_string(), "LD A,$42");
+        assert_eq!(gb.disassemble(0x0100).length, 1);
     }
 
     #[test]
