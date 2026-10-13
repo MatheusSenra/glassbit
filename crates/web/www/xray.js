@@ -8,7 +8,9 @@
 import { t, translatePage } from "./i18n.js";
 
 const DOCS = "https://gbdev.io/pandocs/";
-const SHADES = [
+// The colors used for the four shades in the tile views; replaced when
+// the user picks another palette.
+let shades = [
   [0xe0, 0xf8, 0xd0],
   [0x88, 0xc0, 0x70],
   [0x34, 0x68, 0x56],
@@ -236,6 +238,11 @@ export class Xray {
     this.forget();
   }
 
+  /** Uses the same four colors as the game screen: `[[r, g, b], ...]`. */
+  setShades(colors) {
+    shades = colors;
+  }
+
   /** Drops the step history, e.g. when another cartridge is loaded. */
   forget() {
     this.previousState = null;
@@ -353,7 +360,7 @@ export class Xray {
   }
 
   static plot(image, x, y, palette, color) {
-    const shade = SHADES[(palette >> (color * 2)) & 3];
+    const shade = shades[(palette >> (color * 2)) & 3];
     const offset = (y * image.width + x) * 4;
     image.data[offset] = shade[0];
     image.data[offset + 1] = shade[1];

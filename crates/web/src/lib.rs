@@ -16,9 +16,9 @@ use glassbit_core::ppu::Mode;
 use glassbit_core::{Button, GameBoy, SCREEN_HEIGHT, SCREEN_WIDTH};
 use wasm_bindgen::prelude::*;
 
-/// The four DMG shades as RGBA, from lightest to darkest: the greenish tint
-/// of the original LCD.
-const PALETTE: [[u8; 4]; 4] = [
+/// The default colors for the four DMG shades as RGBA, from lightest to
+/// darkest: the greenish tint of the original LCD.
+const DEFAULT_PALETTE: [[u8; 4]; 4] = [
     [0xE0, 0xF8, 0xD0, 0xFF],
     [0x88, 0xC0, 0x70, 0xFF],
     [0x34, 0x68, 0x56, 0xFF],
@@ -109,12 +109,15 @@ macro_rules! on {
 pub struct Emulator {
     /// Only `None` for an instant while the flavor is being swapped.
     machine: Option<Machine>,
+    /// The RGBA color shown for each of the four shades.
+    palette: [[u8; 4]; 4],
 }
 
 impl Emulator {
     fn from_core(gb: GameBoy) -> Self {
         Self {
             machine: Some(Machine::Plain(gb)),
+            palette: DEFAULT_PALETTE,
         }
     }
 
@@ -197,7 +200,32 @@ impl Emulator {
     /// Writes the screen as RGBA into `out`, which must hold
     /// `screen_width() * screen_height() * 4` bytes.
     pub fn copy_frame(&self, out: &mut [u8]) {
-        on!(self.machine(), gb => write_rgba(gb.framebuffer(), out))
+        on!(self.machine(), gb => write_rgba(gb.framebuffer(), &self.palette, out))
+    }
+
+    /// Chooses the screen colors: 12 bytes, red, green and blue for each
+    /// shade from lightest to darkest. Other lengths are ignored.
+    pub fn set_palette(&mut self, rgb: &[u8]) {
+        if rgb.len() != 12 {
+            return;
+        }
+        for (color, channels) in self.palette.iter_mut().zip(rgb.chunks_exact(3)) {
+            *color = [channels[0], channels[1], channels[2], 0xFF];
+        }
+    }
+
+    /// Captures the whole machine as bytes.
+    pub fn save_state(&self) -> Vec<u8> {
+        on!(self.machine(), gb => gb.save_state())
+    }
+
+    /// Restores a state captured by `save_state` from the same cartridge.
+    /// Throws when the data is not a state for this game. After a throw
+    /// that is not about the wrong game or version, the machine may be half
+    /// restored: load a known good state over it.
+    pub fn load_state(&mut self, data: &[u8]) -> Result<(), JsError> {
+        on!(self.machine_mut(), gb => gb.load_state(data))
+            .map_err(|err| JsError::new(&err.to_string()))
     }
 
     /// Updates a button. `button` is 0-7 for Right, Left, Up, Down, A, B,
@@ -320,9 +348,9 @@ impl Emulator {
     }
 }
 
-fn write_rgba(framebuffer: &[u8], out: &mut [u8]) {
+fn write_rgba(framebuffer: &[u8], palette: &[[u8; 4]; 4], out: &mut [u8]) {
     for (pixel, &shade) in out.chunks_exact_mut(4).zip(framebuffer) {
-        pixel.copy_from_slice(&PALETTE[shade as usize]);
+        pixel.copy_from_slice(&palette[shade as usize]);
     }
 }
 
@@ -345,8 +373,38 @@ mod tests {
 
         assert!(rgba.chunks_exact(4).all(|pixel| pixel[3] == 0xFF));
         // The checkerboard starts with a blank tile, then a tinted one.
-        assert_eq!(rgba[..4], PALETTE[0]);
-        assert_eq!(rgba[8 * 4..8 * 4 + 4], PALETTE[1]);
+        assert_eq!(rgba[..4], DEFAULT_PALETTE[0]);
+        assert_eq!(rgba[8 * 4..8 * 4 + 4], DEFAULT_PALETTE[1]);
+
+        // Grayscale instead of green.
+        emulator.set_palette(&[255, 255, 255, 170, 170, 170, 85, 85, 85, 0, 0, 0]);
+        emulator.copy_frame(&mut rgba);
+        assert_eq!(rgba[..4], [255, 255, 255, 255]);
+        assert_eq!(rgba[8 * 4..8 * 4 + 4], [170, 170, 170, 255]);
+        emulator.set_palette(&[1, 2, 3]);
+        emulator.copy_frame(&mut rgba);
+        assert_eq!(rgba[..4], [255, 255, 255, 255], "bad palettes are ignored");
+    }
+
+    #[test]
+    fn save_state_round_trip_keeps_xray_recording_on() {
+        let mut emulator = Emulator::demo();
+        for _ in 0..12 {
+            emulator.run_frame();
+        }
+        emulator.set_xray(true);
+        let state = emulator.save_state();
+        let before = emulator.cpu_state();
+        for _ in 0..5 {
+            emulator.run_frame();
+        }
+        assert_ne!(emulator.cpu_state(), before);
+
+        emulator
+            .load_state(&state)
+            .unwrap_or_else(|_| panic!("state loads"));
+        assert_eq!(emulator.cpu_state(), before);
+        assert!(emulator.xray());
     }
 
     #[test]

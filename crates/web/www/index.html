@@ -23,13 +23,22 @@
         <p id="status" role="status"></p>
         <p id="save-status" class="note" role="status"></p>
 
-        <div id="controls">
+        <div id="controls" class="controls">
           <label class="button" for="rom-input" data-i18n="button.open"></label>
           <input id="rom-input" type="file" accept=".gb,.gbc,application/octet-stream" hidden />
           <button id="pause" type="button" data-i18n="button.pause"></button>
           <button id="mute" type="button" data-i18n="button.mute"></button>
           <button id="demo" type="button" data-i18n="button.demo"></button>
           <button id="xray-toggle" type="button" aria-controls="xray" aria-expanded="false" data-i18n="button.xray"></button>
+        </div>
+        <div class="controls">
+          <button id="save-state" type="button" data-i18n="button.saveState"></button>
+          <button id="load-state" type="button" data-i18n="button.loadState"></button>
+          <button id="fast" type="button" aria-pressed="false" data-i18n="button.fast"></button>
+          <label class="inline">
+            <span data-i18n="label.palette"></span>
+            <select id="palette"></select>
+          </label>
           <label class="inline">
             <span data-i18n="label.language"></span>
             <select id="language"></select>
@@ -43,6 +52,7 @@
           <tr><th>Z</th><td>B</td></tr>
           <tr><th>Enter</th><td>Start</td></tr>
           <tr><th>Shift</th><td>Select</td></tr>
+          <tr><th data-i18n="keys.space"></th><td data-i18n="keys.fast"></td></tr>
         </table>
 
         <p class="note" data-i18n="note.privacy"></p>

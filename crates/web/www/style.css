@@ -94,7 +94,7 @@ main {
   color: #ff9a8a;
 }
 
-#controls {
+.controls {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
