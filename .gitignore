@@ -1,6 +1,6 @@
 # Build output
 /target/
-/crates/web/pkg/
+/crates/web/www/pkg/
 
 # Test ROMs are downloaded by scripts/fetch-test-roms.sh, never committed
 /test-roms/

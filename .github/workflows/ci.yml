@@ -43,4 +43,4 @@ jobs:
         with:
           tool: wasm-pack
       - name: Build wasm
-        run: wasm-pack build crates/web --target web
+        run: wasm-pack build crates/web --target web --out-dir www/pkg
