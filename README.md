@@ -3,28 +3,79 @@
 # Glassbit
 
 [![CI](https://github.com/MatheusSenra/glassbit/actions/workflows/ci.yml/badge.svg)](https://github.com/MatheusSenra/glassbit/actions/workflows/ci.yml)
+[![Pages](https://github.com/MatheusSenra/glassbit/actions/workflows/pages.yml/badge.svg)](https://matheussenra.github.io/glassbit/)
 
 A Game Boy (DMG) emulator written in Rust that runs in the browser through
 WebAssembly, built to **show how the hardware works while the game runs**.
 
-> Status: early development. It runs in the browser with video, sound, input and battery saves, for ROM-only, MBC1, MBC3 and MBC5 cartridges. An X-ray panel shows the CPU, video, memory and interrupts live and lets you step through the game. The MBC3 clock does not tick.
+**[Try it in your browser](https://matheussenra.github.io/glassbit/)**: it
+starts with a built-in demo, and you can load your own ROM.
 
-<p align="center"><img src="assets/dmg-acid2.png" alt="The dmg-acid2 test rendered by Glassbit" width="320"><br><em>The dmg-acid2 PPU test, rendered by Glassbit.</em></p>
+<p align="center">
+  <img src="assets/demo.gif" alt="A game of 2048 running in Glassbit" width="320"><br>
+  <em>The homebrew <a href="https://github.com/Sanqui/2048-gb">2048-gb</a> by Sanqui, recorded by Glassbit's own runner.</em>
+</p>
 
-## Goals
+<p align="center">
+  <img src="assets/xray.jpg" alt="The X-ray panel beside a running game" width="800"><br>
+  <em>The X-ray panel: paused between two instructions, with the changed register highlighted.</em>
+</p>
+
+## What it does
+
+- Runs ROM-only, MBC1, MBC3 and MBC5 cartridges, with video, sound and input.
+- Keeps battery saves in the browser, one per cartridge.
+- Save states: freeze the whole machine and come back to that moment later.
+- Fast-forward at four times the speed, and four color palettes.
+- **X-ray panel**, in English or Portuguese, with links to the matching
+  [Pan Docs](https://gbdev.io/pandocs/) pages:
+  - **CPU**: registers and flags, the next instructions disassembled, and a
+    sentence saying what the instruction you just stepped did.
+  - **PPU**: mode and line, the background map with the visible area
+    outlined, the tiles in video memory and the sprites on the current line.
+  - **Memory**: the memory map with where each register pair points, and the
+    hardware registers by name with their latest writes.
+  - **Interrupts and timer**: what is enabled and requested, and the latest
+    interrupts served.
+
+Not there yet: the MBC3 real-time clock does not tick, MBC2 and Game Boy
+Color games are not supported, and effects that change video registers in the
+middle of a scanline may look different from real hardware.
+
+## Using it
+
+| Key | Button |
+| --- | --- |
+| Arrow keys | Direction pad |
+| X | A |
+| Z | B |
+| Enter | Start |
+| Shift | Select |
+| Space (hold) | Fast-forward |
+
+Load a ROM with **Open ROM** or by dropping the file on the page. ROMs stay
+in your browser and are never uploaded. Sound starts after your first click
+or key press, as browsers require.
+
+**Save state** and **Load state** keep one snapshot per game in the browser.
+They are separate from the game's own battery save, which is stored
+automatically whenever the game writes it.
+
+Open **X-ray**, pause, and use the step buttons to advance one instruction,
+one scanline or one frame. With the panel closed nothing is recorded and the
+game runs at full speed.
+
+## How it is built
 
 - Reasonable timing accuracy from the start: hardware advances in lockstep, one M-cycle at a time.
 - A platform-independent core that can be driven by a browser, a test runner or anything else.
-- An "X-ray mode": a side panel that explains the CPU, PPU, memory map and interrupts live.
 - Written from documentation ([Pan Docs](https://gbdev.io/pandocs/)), not from other emulators' code.
-
-## Layout
 
 | Crate | What it is |
 | --- | --- |
 | `crates/core` (`glassbit-core`) | The emulator. No browser, window or audio dependencies. |
-| `crates/web` (`glassbit-web`) | WebAssembly frontend (`wasm-bindgen`) and the page in `www/`: canvas, frame loop, keyboard, ROM loading. |
-| `crates/runner` (`glassbit-runner`) | Headless native runner: runs a test ROM, reports whether it passed and can save the screen as a PNG. |
+| `crates/web` (`glassbit-web`) | WebAssembly bindings (`wasm-bindgen`) and the page in `www/`. |
+| `crates/runner` (`glassbit-runner`) | Headless native runner: runs test ROMs and reports whether they passed, saves screenshots and records GIFs. |
 
 ## Building
 
@@ -36,16 +87,9 @@ cargo test --workspace
 ```
 
 Tests that need the downloaded test ROMs (see below) skip themselves when the
-ROMs are missing. To run a single test ROM and see its verdict:
+ROMs are missing.
 
-```bash
-cargo run --release -p glassbit-runner -- "test-roms/game-boy-test-roms/blargg/cpu_instrs/cpu_instrs.gb"
-```
-
-Add `--screenshot out.png` to save the final screen, and `--reference ref.png`
-to pass or fail by comparing the screen with an image.
-
-## Running in the browser
+### The web page
 
 Install [wasm-pack](https://rustwasm.github.io/wasm-pack/), build the wasm
 package into the page's folder and serve that folder with any static server:
@@ -58,35 +102,24 @@ wasm-pack build crates/web --target web --out-dir www/pkg
 python -m http.server 8765 --directory crates/web/www
 ```
 
-Then open <http://localhost:8765>. The page starts with a built-in demo
-cartridge; load your own ROM with the button or by dropping the file on the
-page. ROMs stay in your browser and are never uploaded. Games that save keep
-their progress in the browser's IndexedDB, one save per cartridge. Sound
-starts after your first click or key press, as browsers require.
+Then open <http://localhost:8765>. Pushing to `main` publishes the same folder
+to GitHub Pages.
 
-The **X-ray** button opens a panel beside the game, in English or
-Portuguese:
+### The runner
 
-- **CPU**: registers and flags, the next instructions disassembled, and a
-  sentence saying what the instruction you just stepped did.
-- **PPU**: mode and line, the background map with the visible area outlined,
-  the tiles in video memory and the sprites on the current line.
-- **Memory**: the memory map with where each register pair points, and the
-  hardware registers by name with their latest writes.
-- **Interrupts and timer**: what is enabled and requested, and the latest
-  interrupts served.
+```bash
+cargo run --release -p glassbit-runner -- "test-roms/game-boy-test-roms/blargg/cpu_instrs/cpu_instrs.gb"
+```
 
-Pause and use the step buttons to advance one instruction, one scanline or
-one frame. With the panel closed nothing is recorded and the game runs at
-full speed.
+This prints the cartridge header and the test's verdict. Options:
 
-| Key | Button |
+| Option | Effect |
 | --- | --- |
-| Arrow keys | Direction pad |
-| X | A |
-| Z | B |
-| Enter | Start |
-| Shift | Select |
+| `--frames N` | Give up (or stop recording) after N frames. |
+| `--screenshot out.png` | Save the final screen. |
+| `--reference ref.png` | Pass or fail by comparing the screen with an image. |
+| `--gif out.gif` | Record the run as an animation instead of looking for a verdict. |
+| `--press "start@80-86,left@150-156"` | While recording, hold buttons during the given frames. |
 
 ## Test ROMs
 
@@ -118,6 +151,7 @@ What passes today, all of it checked by `cargo test` in CI:
 | Mooneye `emulator-only/mbc1` | 12 of 13 (all but the multicart one) |
 | Mooneye `emulator-only/mbc5` | all 8 |
 | MBC3 bank tester | pixel-exact match with the reference image |
+| Save states | a restored console stays identical to the original, frame by frame, on seven test ROMs |
 | Mooneye `acceptance`, other | 44, covering instruction, interrupt, HALT, OAM DMA and PPU mode timing and the post-boot state |
 
 Of the Mooneye acceptance tests that do not pass, most target console models
@@ -136,7 +170,7 @@ depends on I/O registers not implemented yet.
 - [x] **Phase 6: Mappers and saves.** MBC3 (clock registers present but not ticking), MBC5, battery RAM persisted in the browser.
 - [x] **Phase 7: Audio.** All four APU channels through an AudioWorklet.
 - [x] **Phase 7.5: X-ray mode.** Live CPU, PPU, memory and interrupt panels, in English and Portuguese.
-- [ ] **Phase 8: Polish.** GitHub Pages deploy, save states, fast-forward, palettes.
+- [x] **Phase 8: Polish.** GitHub Pages deploy, save states, fast-forward, palettes.
 
 Later: link cable over WebRTC, Game Boy Color.
 

@@ -28,7 +28,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build -p glassbit-web --target wasm32-unknown-unknown
-wasm-pack build crates/web --target web --out-dir www/pkg   # also run by CI
+wasm-pack build crates/web --target web --out-dir www/pkg   # also run by CI and Pages
 python -m http.server 8765 --directory crates/web/www       # then open localhost:8765
 python scripts/make-web-images.py            # regenerate www/logo.png and favicon.png
 bash scripts/fetch-test-roms.sh              # fills test-roms/ (git-ignored)
@@ -108,6 +108,20 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
 - **Testing the page:** the browser caches ES modules served by
   `http.server`; after editing a `.js` file, `fetch(file, {cache: "reload"})`
   it (or hard-reload) before trusting what the page runs.
+- **Save states** (`state.rs`): every component has `save_state`/`load_state`
+  writing its fields in a fixed order. Adding, removing or reordering a field
+  means updating both functions and bumping `state::VERSION`. The tests in
+  `crates/runner/tests/save_states.rs` catch a forgotten field as a
+  divergence. Loading masks or rejects values that could index out of bounds.
+- **Web extras:** save states go to a second IndexedDB store, fast-forward
+  multiplies elapsed time by 4 and sends no audio, palettes are chosen in JS
+  and passed to `Emulator::set_palette`.
+- **Deploy:** `.github/workflows/pages.yml` publishes `crates/web/www` to
+  GitHub Pages on every push to `main`
+  (<https://matheussenra.github.io/glassbit/>).
+- **README images:** `assets/demo.gif` is recorded with
+  `glassbit-runner --gif ... --press ...`; `assets/xray.jpg` is a browser
+  screenshot.
 - **Opcodes are decoded by bit fields** (octal `x y z`), not a 256-entry table.
 - **STOP is a NOP** and **illegal opcodes lock the CPU** until something needs
   more.
