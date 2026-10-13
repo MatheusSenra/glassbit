@@ -7,7 +7,7 @@
 A Game Boy (DMG) emulator written in Rust that runs in the browser through
 WebAssembly, built to **show how the hardware works while the game runs**.
 
-> Status: early development. It runs in the browser with video, sound, input and battery saves, for ROM-only, MBC1, MBC3 and MBC5 cartridges. The MBC3 clock does not tick, and the X-ray mode that gives the project its name is not built yet.
+> Status: early development. It runs in the browser with video, sound, input and battery saves, for ROM-only, MBC1, MBC3 and MBC5 cartridges. An X-ray panel shows the CPU, video, memory and interrupts live and lets you step through the game. The MBC3 clock does not tick.
 
 <p align="center"><img src="assets/dmg-acid2.png" alt="The dmg-acid2 test rendered by Glassbit" width="320"><br><em>The dmg-acid2 PPU test, rendered by Glassbit.</em></p>
 
@@ -64,6 +64,22 @@ page. ROMs stay in your browser and are never uploaded. Games that save keep
 their progress in the browser's IndexedDB, one save per cartridge. Sound
 starts after your first click or key press, as browsers require.
 
+The **X-ray** button opens a panel beside the game, in English or
+Portuguese:
+
+- **CPU**: registers and flags, the next instructions disassembled, and a
+  sentence saying what the instruction you just stepped did.
+- **PPU**: mode and line, the background map with the visible area outlined,
+  the tiles in video memory and the sprites on the current line.
+- **Memory**: the memory map with where each register pair points, and the
+  hardware registers by name with their latest writes.
+- **Interrupts and timer**: what is enabled and requested, and the latest
+  interrupts served.
+
+Pause and use the step buttons to advance one instruction, one scanline or
+one frame. With the panel closed nothing is recorded and the game runs at
+full speed.
+
 | Key | Button |
 | --- | --- |
 | Arrow keys | Direction pad |
@@ -119,7 +135,7 @@ depends on I/O registers not implemented yet.
 - [x] **Phase 5: Playable web frontend.** Canvas, frame loop, keyboard, ROM loading, joypad, built-in demo cartridge, MBC1.
 - [x] **Phase 6: Mappers and saves.** MBC3 (clock registers present but not ticking), MBC5, battery RAM persisted in the browser.
 - [x] **Phase 7: Audio.** All four APU channels through an AudioWorklet.
-- [ ] **Phase 7.5: X-ray mode.** Live CPU, PPU, memory and interrupt panels, in English and Portuguese.
+- [x] **Phase 7.5: X-ray mode.** Live CPU, PPU, memory and interrupt panels, in English and Portuguese.
 - [ ] **Phase 8: Polish.** GitHub Pages deploy, save states, fast-forward, palettes.
 
 Later: link cable over WebRTC, Game Boy Color.

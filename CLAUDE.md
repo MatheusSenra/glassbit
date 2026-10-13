@@ -44,7 +44,7 @@ bash scripts/fetch-test-roms.sh              # fills test-roms/ (git-ignored)
   verification tool.
 
 Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
-`apu`, `cartridge` (trait for MBCs), `observer`, `demo`.
+`apu`, `cartridge` (trait for MBCs), `observer`, `disasm`, `demo`.
 
 ### Design decisions
 
@@ -96,6 +96,18 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
   holds a ring buffer, fades on underrun and skips ahead on overflow.
   `www/audio.js` nudges emulation speed by at most 2% to hold about 70 ms
   queued. The `AudioContext` is created on the first user gesture.
+- **X-ray mode:** the web `Emulator` holds either `GameBoy<NullObserver>` or
+  `GameBoy<Recorder>` and swaps between them with `GameBoy::into_observed`
+  when the panel opens or closes. `www/xray.js` only reads the emulator and
+  redraws; `www/i18n.js` holds every user-visible string in English and
+  Portuguese (static HTML uses `data-i18n`). Instruction explanations are
+  templates keyed by operation in `i18n.js`, fed by `disasm`.
+- **Large buffers (VRAM, framebuffer, WRAM) are `Box<[u8]>`, not arrays.**
+  With inline arrays, moving a `GameBoy` by value made LLVM emit a 720 KB
+  function in the wasm and `wasm-opt` hang. Keep big state on the heap.
+- **Testing the page:** the browser caches ES modules served by
+  `http.server`; after editing a `.js` file, `fetch(file, {cache: "reload"})`
+  it (or hard-reload) before trusting what the page runs.
 - **Opcodes are decoded by bit fields** (octal `x y z`), not a 256-entry table.
 - **STOP is a NOP** and **illegal opcodes lock the CPU** until something needs
   more.
