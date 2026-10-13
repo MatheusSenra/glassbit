@@ -7,7 +7,7 @@
 A Game Boy (DMG) emulator written in Rust that runs in the browser through
 WebAssembly, built to **show how the hardware works while the game runs**.
 
-> Status: early development. It runs in the browser with video, input and battery saves, for ROM-only, MBC1, MBC3 and MBC5 cartridges. There is no sound yet, and the MBC3 clock does not tick.
+> Status: early development. It runs in the browser with video, sound, input and battery saves, for ROM-only, MBC1, MBC3 and MBC5 cartridges. The MBC3 clock does not tick, and the X-ray mode that gives the project its name is not built yet.
 
 <p align="center"><img src="assets/dmg-acid2.png" alt="The dmg-acid2 test rendered by Glassbit" width="320"><br><em>The dmg-acid2 PPU test, rendered by Glassbit.</em></p>
 
@@ -61,7 +61,8 @@ python -m http.server 8765 --directory crates/web/www
 Then open <http://localhost:8765>. The page starts with a built-in demo
 cartridge; load your own ROM with the button or by dropping the file on the
 page. ROMs stay in your browser and are never uploaded. Games that save keep
-their progress in the browser's IndexedDB, one save per cartridge.
+their progress in the browser's IndexedDB, one save per cartridge. Sound
+starts after your first click or key press, as browsers require.
 
 | Key | Button |
 | --- | --- |
@@ -95,6 +96,7 @@ What passes today, all of it checked by `cargo test` in CI:
 | Blargg `cpu_instrs` | all 11 |
 | Blargg `instr_timing` | pass |
 | Blargg `mem_timing` | all 3 |
+| Blargg `dmg_sound` | 9 of 12 (not the three about wave RAM access while playing) |
 | dmg-acid2 | pixel-exact match with the reference image |
 | Mooneye `acceptance/timer` | all 13 |
 | Mooneye `emulator-only/mbc1` | 12 of 13 (all but the multicart one) |
@@ -116,7 +118,7 @@ depends on I/O registers not implemented yet.
 - [x] **Phase 4: PPU.** Modes, STAT, background, window, sprites, OAM DMA. Pixel-exact `dmg-acid2`.
 - [x] **Phase 5: Playable web frontend.** Canvas, frame loop, keyboard, ROM loading, joypad, built-in demo cartridge, MBC1.
 - [x] **Phase 6: Mappers and saves.** MBC3 (clock registers present but not ticking), MBC5, battery RAM persisted in the browser.
-- [ ] **Phase 7: Audio.** All four APU channels through an AudioWorklet.
+- [x] **Phase 7: Audio.** All four APU channels through an AudioWorklet.
 - [ ] **Phase 7.5: X-ray mode.** Live CPU, PPU, memory and interrupt panels, in English and Portuguese.
 - [ ] **Phase 8: Polish.** GitHub Pages deploy, save states, fast-forward, palettes.
 

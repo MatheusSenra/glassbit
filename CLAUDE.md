@@ -44,7 +44,7 @@ bash scripts/fetch-test-roms.sh              # fills test-roms/ (git-ignored)
   verification tool.
 
 Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
-`cartridge` (trait for MBCs), `observer`, `demo`; `apu` comes in phase 7.
+`apu`, `cartridge` (trait for MBCs), `observer`, `demo`.
 
 ### Design decisions
 
@@ -87,6 +87,15 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
 - **Battery saves are the frontend's job:** the core exposes `save_data`,
   `load_save` and `take_save_dirty`; the page stores raw cartridge RAM in
   IndexedDB (`www/saves.js`), keyed by title plus global checksum.
+- **Audio:** the APU ticks once per M-cycle with channel timers in T-cycles,
+  averages the mixer output down to the frontend's sample rate and applies
+  the capacitor high-pass. The frame sequencer has its own counter (it is not
+  tied to DIV). Wave RAM access while channel 3 plays is not modeled.
+  `GameBoy::audio_samples()` is interleaved stereo for the last frame.
+- **Web audio:** samples go by `postMessage` to `www/audio-worklet.js`, which
+  holds a ring buffer, fades on underrun and skips ahead on overflow.
+  `www/audio.js` nudges emulation speed by at most 2% to hold about 70 ms
+  queued. The `AudioContext` is created on the first user gesture.
 - **Opcodes are decoded by bit fields** (octal `x y z`), not a 256-entry table.
 - **STOP is a NOP** and **illegal opcodes lock the CPU** until something needs
   more.
