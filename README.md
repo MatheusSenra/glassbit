@@ -7,7 +7,7 @@
 A Game Boy (DMG) emulator written in Rust that runs in the browser through
 WebAssembly, built to **show how the hardware works while the game runs**.
 
-> Status: early development. It runs in the browser with video and input, for ROM-only and MBC1 cartridges. There is no sound and there are no saves yet.
+> Status: early development. It runs in the browser with video, input and battery saves, for ROM-only, MBC1, MBC3 and MBC5 cartridges. There is no sound yet, and the MBC3 clock does not tick.
 
 <p align="center"><img src="assets/dmg-acid2.png" alt="The dmg-acid2 test rendered by Glassbit" width="320"><br><em>The dmg-acid2 PPU test, rendered by Glassbit.</em></p>
 
@@ -60,7 +60,8 @@ python -m http.server 8765 --directory crates/web/www
 
 Then open <http://localhost:8765>. The page starts with a built-in demo
 cartridge; load your own ROM with the button or by dropping the file on the
-page. ROMs stay in your browser and are never uploaded.
+page. ROMs stay in your browser and are never uploaded. Games that save keep
+their progress in the browser's IndexedDB, one save per cartridge.
 
 | Key | Button |
 | --- | --- |
@@ -97,12 +98,14 @@ What passes today, all of it checked by `cargo test` in CI:
 | dmg-acid2 | pixel-exact match with the reference image |
 | Mooneye `acceptance/timer` | all 13 |
 | Mooneye `emulator-only/mbc1` | 12 of 13 (all but the multicart one) |
-| Mooneye `acceptance`, other | 43, covering instruction, interrupt, HALT, OAM DMA and PPU mode timing and the post-boot state |
+| Mooneye `emulator-only/mbc5` | all 8 |
+| MBC3 bank tester | pixel-exact match with the reference image |
+| Mooneye `acceptance`, other | 44, covering instruction, interrupt, HALT, OAM DMA and PPU mode timing and the post-boot state |
 
 Of the Mooneye acceptance tests that do not pass, most target console models
 other than the DMG. The rest are five PPU tests that need pixel-level timing
-(the PPU draws a whole line at once), two `-GS` timing tests, and two that
-depend on I/O registers and a mapper not implemented yet.
+(the PPU draws a whole line at once), two `-GS` timing tests, and one that
+depends on I/O registers not implemented yet.
 
 ## Roadmap
 
@@ -112,7 +115,7 @@ depend on I/O registers and a mapper not implemented yet.
 - [x] **Phase 3: Interrupts and timer.** IME, HALT (and its bug), EI delay, DIV/TIMA/TMA/TAC. Blargg `instr_timing`, `mem_timing`, all of `cpu_instrs` and Mooneye timer tests.
 - [x] **Phase 4: PPU.** Modes, STAT, background, window, sprites, OAM DMA. Pixel-exact `dmg-acid2`.
 - [x] **Phase 5: Playable web frontend.** Canvas, frame loop, keyboard, ROM loading, joypad, built-in demo cartridge, MBC1.
-- [ ] **Phase 6: Mappers and saves.** MBC3, MBC5, battery RAM persisted in the browser.
+- [x] **Phase 6: Mappers and saves.** MBC3 (clock registers present but not ticking), MBC5, battery RAM persisted in the browser.
 - [ ] **Phase 7: Audio.** All four APU channels through an AudioWorklet.
 - [ ] **Phase 7.5: X-ray mode.** Live CPU, PPU, memory and interrupt panels, in English and Portuguese.
 - [ ] **Phase 8: Polish.** GitHub Pages deploy, save states, fast-forward, palettes.

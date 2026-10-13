@@ -81,6 +81,12 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
 - **`glassbit_core::demo::rom()` is a hand-assembled demo cartridge** used as
   the page's default and for end-to-end input tests. Web key mapping: arrows,
   X = A, Z = B, Enter = Start, Shift = Select.
+- **Mappers:** ROM-only, MBC1 (no multicart), MBC3 (MBC30 inferred from
+  sizes; RTC registers are storage only, the clock does not tick because the
+  core has no wall-clock time) and MBC5 (rumble ignored). MBC2 is missing.
+- **Battery saves are the frontend's job:** the core exposes `save_data`,
+  `load_save` and `take_save_dirty`; the page stores raw cartridge RAM in
+  IndexedDB (`www/saves.js`), keyed by title plus global checksum.
 - **Opcodes are decoded by bit fields** (octal `x y z`), not a 256-entry table.
 - **STOP is a NOP** and **illegal opcodes lock the CPU** until something needs
   more.
