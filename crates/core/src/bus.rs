@@ -25,14 +25,13 @@
 
 use crate::cartridge::Cartridge;
 use crate::cpu::CpuBus;
+use crate::interrupts;
 use crate::observer::{NullObserver, Observer};
 use crate::serial::{self, Serial};
+use crate::timer::{self, Timer};
 
-const IF: u16 = 0xFF0F;
 const LCDC: u16 = 0xFF40;
 const LY: u16 = 0xFF44;
-
-const INTERRUPT_SERIAL: u8 = 0x08;
 
 /// A scanline lasts 456 clock ticks, and there are 154 of them per frame
 /// (144 visible plus 10 of vertical blanking).
@@ -40,16 +39,12 @@ const CYCLES_PER_LINE: u16 = 114;
 const LINES_PER_FRAME: u8 = 154;
 
 /// I/O register values right after the DMG boot ROM hands control to the
-/// cartridge. Registers not listed here are unmapped and read `0xFF`.
+/// cartridge. Registers not listed here either belong to a component with
+/// its own state (serial, timer, interrupts) or are unmapped and read `0xFF`.
 ///
 /// Reference: <https://gbdev.io/pandocs/Power_Up_Sequence.html#hardware-registers>
 const POST_BOOT_IO: &[(u16, u8)] = &[
     (0xFF00, 0xCF), // P1
-    (0xFF04, 0xAB), // DIV
-    (0xFF05, 0x00), // TIMA
-    (0xFF06, 0x00), // TMA
-    (0xFF07, 0xF8), // TAC
-    (0xFF0F, 0xE1), // IF
     (0xFF10, 0x80), // NR10
     (0xFF11, 0xBF), // NR11
     (0xFF12, 0xF3), // NR12
@@ -97,8 +92,12 @@ pub struct Bus<O: Observer = NullObserver> {
     oam: [u8; OAM_SIZE],
     io: [u8; IO_SIZE],
     hram: [u8; HRAM_SIZE],
-    ie: u8,
+    /// IF: one bit per interrupt source that is asking for service.
+    interrupt_flag: u8,
+    /// IE: which sources the program wants to be interrupted by.
+    interrupt_enable: u8,
     serial: Serial,
+    timer: Timer,
     /// M-cycles into the current scanline. Stands in for the PPU, which for
     /// now only counts lines so that programs waiting on LY make progress.
     line_cycles: u16,
@@ -121,8 +120,11 @@ impl<O: Observer> Bus<O> {
             oam: [0; OAM_SIZE],
             io,
             hram: [0; HRAM_SIZE],
-            ie: 0x00,
+            // The boot ROM leaves a VBlank request behind.
+            interrupt_flag: interrupts::VBLANK,
+            interrupt_enable: 0x00,
             serial: Serial::new(),
+            timer: Timer::new(),
             line_cycles: 0,
             cycles: 0,
             observer,
@@ -147,8 +149,11 @@ impl<O: Observer> Bus<O> {
     fn tick(&mut self) {
         self.cycles += 1;
 
+        if self.timer.tick() {
+            self.interrupt_flag |= interrupts::TIMER;
+        }
         if self.serial.tick() {
-            self.io[(IF - 0xFF00) as usize] |= INTERRUPT_SERIAL;
+            self.interrupt_flag |= interrupts::SERIAL;
         }
 
         let lcd_on = self.io[(LCDC - 0xFF00) as usize] & 0x80 != 0;
@@ -177,9 +182,12 @@ impl<O: Observer> Bus<O> {
             // On DMG this area reads zero.
             0xFEA0..=0xFEFF => 0x00,
             serial::SB | serial::SC => self.serial.read(addr),
+            timer::DIV..=timer::TAC => self.timer.read(addr),
+            // The upper three bits do not exist and read as 1.
+            interrupts::IF => self.interrupt_flag | !interrupts::MASK,
             0xFF00..=0xFF7F => self.io[(addr - 0xFF00) as usize],
             0xFF80..=0xFFFE => self.hram[(addr - 0xFF80) as usize],
-            0xFFFF => self.ie,
+            interrupts::IE => self.interrupt_enable,
         }
     }
 
@@ -197,6 +205,8 @@ impl<O: Observer> Bus<O> {
                 let old = self.peek(addr);
                 match addr {
                     serial::SB | serial::SC => self.serial.write(addr, value),
+                    timer::DIV..=timer::TAC => self.timer.write(addr, value),
+                    interrupts::IF => self.interrupt_flag = value & interrupts::MASK,
                     // LY is read-only.
                     LY => {}
                     _ => self.io[(addr - 0xFF00) as usize] = value,
@@ -204,9 +214,10 @@ impl<O: Observer> Bus<O> {
                 self.observer.io_write(addr, old, value);
             }
             0xFF80..=0xFFFE => self.hram[(addr - 0xFF80) as usize] = value,
-            0xFFFF => {
-                let old = self.ie;
-                self.ie = value;
+            interrupts::IE => {
+                let old = self.interrupt_enable;
+                // Unlike IF, all eight bits of IE can be stored.
+                self.interrupt_enable = value;
                 self.observer.io_write(addr, old, value);
             }
         }
@@ -226,6 +237,15 @@ impl<O: Observer> CpuBus for Bus<O> {
 
     fn idle(&mut self) {
         self.tick();
+    }
+
+    fn pending_interrupts(&self) -> u8 {
+        self.interrupt_flag & self.interrupt_enable & interrupts::MASK
+    }
+
+    fn acknowledge_interrupt(&mut self, bit: u8) {
+        self.interrupt_flag &= !bit;
+        self.observer.interrupt(bit);
     }
 }
 
@@ -342,11 +362,16 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         writes: Vec<(u16, u8, u8)>,
+        interrupts: Vec<u8>,
     }
 
     impl Observer for Recorder {
         fn io_write(&mut self, addr: u16, old: u8, new: u8) {
             self.writes.push((addr, old, new));
+        }
+
+        fn interrupt(&mut self, bit: u8) {
+            self.interrupts.push(bit);
         }
     }
 
@@ -365,6 +390,9 @@ mod tests {
             bus.observer.writes,
             vec![(0xFF47, 0xFC, 0xE4), (0xFFFF, 0x00, 0x01)]
         );
+
+        bus.acknowledge_interrupt(0x01);
+        assert_eq!(bus.observer.interrupts, vec![0x01]);
     }
 
     #[test]
@@ -375,6 +403,50 @@ mod tests {
         bus.poke(0xFF01, b'x');
         bus.poke(0xFF02, 0x81);
         assert_eq!(bus.take_serial_output(), b"x");
+    }
+
+    #[test]
+    fn timer_registers_are_mapped() {
+        let mut bus = bus();
+        assert_eq!(bus.peek(0xFF04), 0xAB);
+        assert_eq!(bus.peek(0xFF07), 0xF8);
+        bus.poke(0xFF06, 0x42);
+        assert_eq!(bus.peek(0xFF06), 0x42);
+        bus.poke(0xFF04, 0x77);
+        assert_eq!(bus.peek(0xFF04), 0x00, "any write resets DIV");
+    }
+
+    #[test]
+    fn timer_overflow_requests_an_interrupt() {
+        let mut bus = bus();
+        bus.poke(0xFF0F, 0x00);
+        bus.poke(0xFF05, 0xFF);
+        bus.poke(0xFF07, 0x05);
+        for _ in 0..8 {
+            bus.idle();
+        }
+        assert_eq!(bus.peek(0xFF0F) & 0x04, 0x04);
+    }
+
+    #[test]
+    fn only_interrupts_both_requested_and_enabled_are_pending() {
+        let mut bus = bus();
+        bus.poke(0xFF0F, 0x05);
+        bus.poke(0xFFFF, 0x0C);
+        assert_eq!(bus.pending_interrupts(), 0x04);
+        bus.acknowledge_interrupt(0x04);
+        assert_eq!(bus.pending_interrupts(), 0x00);
+        assert_eq!(bus.peek(0xFF0F), 0xE1, "other requests are kept");
+    }
+
+    #[test]
+    fn if_has_five_bits_and_ie_has_eight() {
+        let mut bus = bus();
+        bus.poke(0xFF0F, 0x00);
+        assert_eq!(bus.peek(0xFF0F), 0xE0);
+        bus.poke(0xFFFF, 0xFF);
+        assert_eq!(bus.peek(0xFFFF), 0xFF);
+        assert_eq!(bus.pending_interrupts(), 0x00);
     }
 
     #[test]

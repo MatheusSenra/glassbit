@@ -7,8 +7,10 @@
 pub mod bus;
 pub mod cartridge;
 pub mod cpu;
+pub mod interrupts;
 pub mod observer;
 pub mod serial;
+pub mod timer;
 
 use bus::Bus;
 use cartridge::{Cartridge, CartridgeError, Header};
@@ -254,6 +256,41 @@ mod tests {
             gb.step();
         }
         assert_eq!(gb.observer().pcs, vec![0x0100, 0x0101, 0x0150, 0x0151]);
+    }
+
+    #[test]
+    fn timer_interrupt_runs_its_handler() {
+        // Handler at 0x50: LD B,0x99 ; RETI
+        // Main: enable the timer interrupt, start the fastest timer from
+        // 0xFF, EI, then spin.
+        let mut rom = rom_running(&[
+            0x3E, 0x04, 0xE0, 0xFF, // LD A,4 ; LDH (IE),A
+            0xAF, 0xE0, 0x0F, // XOR A ; LDH (IF),A
+            0x3E, 0xFF, 0xE0, 0x05, // LD A,0xFF ; LDH (TIMA),A
+            0x3E, 0x05, 0xE0, 0x07, // LD A,5 ; LDH (TAC),A
+            0xFB, // EI
+        ]);
+        rom[0x50..0x53].copy_from_slice(&[0x06, 0x99, 0xD9]);
+
+        let mut gb =
+            GameBoy::with_observer(&rom, Interrupts::default()).unwrap_or_else(|e| panic!("{e}"));
+        for _ in 0..40 {
+            gb.step();
+        }
+        assert_eq!(gb.cpu().regs.b, 0x99);
+        assert!(gb.cpu().ime, "RETI turned interrupts back on");
+        assert_eq!(gb.observer().bits[0], interrupts::TIMER);
+    }
+
+    #[derive(Default)]
+    struct Interrupts {
+        bits: Vec<u8>,
+    }
+
+    impl Observer for Interrupts {
+        fn interrupt(&mut self, bit: u8) {
+            self.bits.push(bit);
+        }
     }
 
     #[test]

@@ -11,6 +11,8 @@
 mod execute;
 mod registers;
 
+use crate::interrupts;
+
 pub use registers::{Registers, FLAG_C, FLAG_H, FLAG_N, FLAG_Z};
 
 /// What the CPU is plugged into. Each method call lasts one M-cycle.
@@ -21,6 +23,15 @@ pub trait CpuBus {
     fn write(&mut self, addr: u16, value: u8);
     /// An M-cycle in which the CPU works internally and touches no memory.
     fn idle(&mut self);
+
+    /// Interrupts that are both requested (IF) and enabled (IE), one bit
+    /// each. A bus with no interrupt hardware reports none.
+    fn pending_interrupts(&self) -> u8 {
+        0
+    }
+
+    /// The CPU is serving the interrupt with this bit: clear its request.
+    fn acknowledge_interrupt(&mut self, _bit: u8) {}
 }
 
 /// The CPU state.
@@ -33,6 +44,10 @@ pub struct Cpu {
     pub ime_pending: bool,
     /// HALT was executed: the CPU sleeps until an interrupt is pending.
     pub halted: bool,
+    /// HALT was executed with interrupts disabled while one was already
+    /// pending: the CPU does not sleep, and it fails to advance PC when
+    /// fetching the next opcode, so that byte gets read twice.
+    pub halt_bug: bool,
     /// An illegal opcode was executed: the CPU is stuck until power off.
     pub locked: bool,
 }
@@ -46,20 +61,81 @@ impl Cpu {
         }
     }
 
-    /// Executes one instruction (or sleeps for one M-cycle).
+    /// Executes one instruction, serves one interrupt, or sleeps for one
+    /// M-cycle.
     pub fn step<B: CpuBus>(&mut self, bus: &mut B) {
-        if self.halted || self.locked {
+        if self.locked {
             bus.idle();
             return;
         }
+        if self.halted {
+            // A pending interrupt wakes the CPU even when IME is off; it is
+            // only *served* when IME is on.
+            if bus.pending_interrupts() == 0 {
+                bus.idle();
+                return;
+            }
+            self.halted = false;
+            if self.ime {
+                bus.idle();
+                self.serve_interrupt(bus);
+                return;
+            }
+        }
 
         let enable_interrupts = self.ime_pending;
-        let opcode = self.fetch8(bus);
+        let opcode = bus.read(self.regs.pc);
+        // Interrupts are sampled while the opcode is being fetched. When one
+        // is taken, the fetched opcode is thrown away and PC stays put, so
+        // the fetch becomes the first of the dispatch's five M-cycles.
+        if self.ime && bus.pending_interrupts() != 0 {
+            self.serve_interrupt(bus);
+            return;
+        }
+        if self.halt_bug {
+            self.halt_bug = false;
+        } else {
+            self.regs.pc = self.regs.pc.wrapping_add(1);
+        }
         self.execute(opcode, bus);
         // EI is delayed by one instruction; a DI in between cancels it.
         if enable_interrupts && self.ime_pending {
             self.ime = true;
             self.ime_pending = false;
+        }
+    }
+
+    /// The last four of the five M-cycles of an interrupt dispatch (the
+    /// caller spent the first): push PC and jump to the handler.
+    fn serve_interrupt<B: CpuBus>(&mut self, bus: &mut B) {
+        self.ime = false;
+        bus.idle();
+        let [lo, hi] = self.regs.pc.to_le_bytes();
+        self.regs.sp = self.regs.sp.wrapping_sub(1);
+        bus.write(self.regs.sp, hi);
+        // The source is chosen only now. If the push above landed on IE and
+        // disabled everything, the dispatch is cancelled and PC ends up at 0.
+        let pending = bus.pending_interrupts();
+        self.regs.sp = self.regs.sp.wrapping_sub(1);
+        bus.write(self.regs.sp, lo);
+        if pending == 0 {
+            self.regs.pc = 0x0000;
+        } else {
+            // The lowest set bit has the highest priority.
+            let bit = pending & pending.wrapping_neg();
+            bus.acknowledge_interrupt(bit);
+            self.regs.pc = interrupts::vector(bit);
+        }
+        bus.idle();
+    }
+
+    /// HALT. Its three outcomes depend on IME and on pending interrupts.
+    fn halt<B: CpuBus>(&mut self, bus: &mut B) {
+        // An EI just before HALT counts as interrupts enabled.
+        if self.ime || self.ime_pending || bus.pending_interrupts() == 0 {
+            self.halted = true;
+        } else {
+            self.halt_bug = true;
         }
     }
 
@@ -97,7 +173,8 @@ impl Cpu {
 mod tests {
     use super::*;
 
-    /// 64 KiB of RAM that counts M-cycles.
+    /// 64 KiB of RAM that counts M-cycles, with IF and IE at their usual
+    /// addresses.
     struct FlatBus {
         memory: Vec<u8>,
         cycles: u32,
@@ -117,6 +194,97 @@ mod tests {
         fn idle(&mut self) {
             self.cycles += 1;
         }
+
+        fn pending_interrupts(&self) -> u8 {
+            self.memory[0xFF0F] & self.memory[0xFFFF] & 0x1F
+        }
+
+        fn acknowledge_interrupt(&mut self, bit: u8) {
+            self.memory[0xFF0F] &= !bit;
+        }
+    }
+
+    /// Like `run`, with `request` in IF and everything enabled in IE.
+    fn run_with_interrupt(program: &[u8], request: u8, ime: bool, steps: usize) -> (Cpu, FlatBus) {
+        let mut bus = FlatBus {
+            memory: vec![0; 0x1_0000],
+            cycles: 0,
+        };
+        bus.memory[0x100..0x100 + program.len()].copy_from_slice(program);
+        bus.memory[0xFF0F] = request;
+        bus.memory[0xFFFF] = 0x1F;
+        let mut cpu = Cpu {
+            ime,
+            ..Cpu::default()
+        };
+        cpu.regs.pc = 0x0100;
+        cpu.regs.sp = 0xD000;
+        for _ in 0..steps {
+            cpu.step(&mut bus);
+        }
+        (cpu, bus)
+    }
+
+    #[test]
+    fn serving_an_interrupt_pushes_pc_and_jumps_to_the_vector() {
+        let (cpu, bus) = run_with_interrupt(&[0x00], 0x04, true, 1);
+        assert_eq!(cpu.regs.pc, 0x0050);
+        assert_eq!(cpu.regs.sp, 0xCFFE);
+        assert_eq!(bus.memory[0xCFFF], 0x01);
+        assert_eq!(bus.memory[0xCFFE], 0x00);
+        assert!(
+            !cpu.ime,
+            "nested interrupts are off until the handler says so"
+        );
+        assert_eq!(bus.memory[0xFF0F], 0x00, "the request is cleared");
+        assert_eq!(bus.cycles, 5);
+    }
+
+    #[test]
+    fn lowest_bit_wins_when_several_interrupts_are_pending() {
+        let (cpu, bus) = run_with_interrupt(&[0x00], 0x14, true, 1);
+        assert_eq!(cpu.regs.pc, 0x0050);
+        assert_eq!(bus.memory[0xFF0F], 0x10, "the other one keeps waiting");
+    }
+
+    #[test]
+    fn nothing_is_served_while_ime_is_off() {
+        let (cpu, _) = run_with_interrupt(&[0x00, 0x00], 0x04, false, 2);
+        assert_eq!(cpu.regs.pc, 0x0102);
+    }
+
+    #[test]
+    fn halt_sleeps_until_an_interrupt_is_pending() {
+        // HALT ; INC A
+        let (mut cpu, mut bus) = run_with_interrupt(&[0x76, 0x3C], 0x00, false, 10);
+        assert!(cpu.halted);
+        assert_eq!(cpu.regs.a, 0);
+
+        // With IME off the CPU just wakes up and carries on.
+        bus.memory[0xFF0F] = 0x01;
+        cpu.step(&mut bus);
+        assert!(!cpu.halted);
+        assert_eq!(cpu.regs.a, 1);
+        assert_eq!(cpu.regs.pc, 0x0102);
+    }
+
+    #[test]
+    fn halt_with_ime_on_wakes_into_the_handler() {
+        let (mut cpu, mut bus) = run_with_interrupt(&[0x76, 0x3C], 0x00, true, 3);
+        bus.memory[0xFF0F] = 0x01;
+        cpu.step(&mut bus);
+        assert_eq!(cpu.regs.pc, 0x0040);
+        assert_eq!(bus.memory[0xCFFE], 0x01, "returns to just after HALT");
+    }
+
+    #[test]
+    fn halt_bug_reads_the_next_byte_twice() {
+        // HALT ; INC A  with IME off and an interrupt already pending:
+        // INC A runs twice because PC does not advance the first time.
+        let (cpu, _) = run_with_interrupt(&[0x76, 0x3C, 0x00], 0x01, false, 3);
+        assert!(!cpu.halted);
+        assert_eq!(cpu.regs.a, 2);
+        assert_eq!(cpu.regs.pc, 0x0102);
     }
 
     /// Runs `program` from address 0 for `steps` instructions.

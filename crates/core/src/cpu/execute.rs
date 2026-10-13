@@ -15,7 +15,7 @@ impl Cpu {
         match opcode >> 6 {
             0 => self.execute_block0(opcode, y, z, bus),
             // HALT sits where LD (HL),(HL) would be.
-            1 if opcode == 0x76 => self.halted = true,
+            1 if opcode == 0x76 => self.halt(bus),
             1 => {
                 let value = self.read_r8(z, bus);
                 self.write_r8(y, value, bus);

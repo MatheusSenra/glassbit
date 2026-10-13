@@ -12,6 +12,10 @@ pub trait Observer {
     /// The CPU executed one instruction. `before.pc` is its address.
     fn instruction(&mut self, _before: &Registers, _after: &Registers) {}
 
+    /// The CPU started serving an interrupt. `bit` is its bit in IF/IE; see
+    /// [`crate::interrupts`] for the sources.
+    fn interrupt(&mut self, _bit: u8) {}
+
     /// A write landed on an I/O register (`0xFF00..=0xFF7F`) or on IE (`0xFFFF`).
     fn io_write(&mut self, _addr: u16, _old: u8, _new: u8) {}
 }
