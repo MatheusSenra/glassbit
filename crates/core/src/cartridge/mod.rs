@@ -86,9 +86,8 @@ impl Cartridge {
         };
         let mbc: Box<dyn Mbc> = match header.cartridge_type.mapper {
             MapperKind::RomOnly => Box::new(RomOnly::new(rom.to_vec(), ram_size)),
-            // Only the ROM banking half of MBC1 exists so far.
-            MapperKind::Mbc1 if ram_size == 0 && header.rom_size <= mbc1::MAX_ROM_SIZE => {
-                Box::new(Mbc1::new(rom[..header.rom_size].to_vec()))
+            MapperKind::Mbc1 if header.rom_size <= mbc1::MAX_ROM_SIZE => {
+                Box::new(Mbc1::new(rom[..header.rom_size].to_vec(), ram_size))
             }
             _ => {
                 return Err(CartridgeError::UnsupportedMapper(
@@ -219,30 +218,25 @@ mod tests {
     }
 
     #[test]
-    fn builds_an_mbc1_cartridge_without_ram() {
+    fn builds_an_mbc1_cartridge_with_ram() {
         let rom = RomBuilder::new()
-            .cartridge_type(0x01)
+            .cartridge_type(0x03)
             .rom_size_code(1)
+            .ram_size_code(2)
             .build();
         let mut cart = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
         // The builder fills the ROM with the low byte of each offset, so
         // every bank looks alike; switching must at least not disturb reads.
         cart.write_rom(0x2000, 3);
         assert_eq!(cart.read_rom(0x4042), 0x42);
+
+        cart.write_rom(0x0000, 0x0A);
+        cart.write_ram(0xA000, 0x77);
+        assert_eq!(cart.read_ram(0xA000), 0x77);
     }
 
     #[test]
     fn rejects_unimplemented_mappers() {
-        // MBC1 with RAM is not supported yet.
-        let rom = RomBuilder::new()
-            .cartridge_type(0x03)
-            .ram_size_code(2)
-            .build();
-        assert_eq!(
-            Cartridge::new(&rom).err(),
-            Some(CartridgeError::UnsupportedMapper(0x03))
-        );
-
         let rom = RomBuilder::new().cartridge_type(0x19).build();
         assert_eq!(
             Cartridge::new(&rom).err(),
