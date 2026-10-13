@@ -1,7 +1,8 @@
-// Glassbit web frontend: canvas, frame loop, keyboard and ROM loading.
+// Glassbit web frontend: canvas, frame loop, keyboard, sound and ROM loading.
 // All emulation happens in the wasm module; this file is only glue.
 
 import init, { Emulator, core_version, screen_height, screen_width } from "./pkg/glassbit_web.js";
+import { AudioOutput } from "./audio.js";
 import { readSave, writeSave } from "./saves.js";
 
 // The Game Boy draws 59.73 frames per second (4194304 Hz / 70224 dots).
@@ -28,6 +29,7 @@ const canvas = document.getElementById("screen");
 const statusLine = document.getElementById("status");
 const saveLine = document.getElementById("save-status");
 const pauseButton = document.getElementById("pause");
+const muteButton = document.getElementById("mute");
 const screenFrame = document.getElementById("screen-frame");
 const dropHint = document.getElementById("drop-hint");
 
@@ -36,6 +38,7 @@ await init();
 const context = canvas.getContext("2d");
 const image = context.createImageData(screen_width(), screen_height());
 
+const audio = new AudioOutput();
 let emulator = null;
 let paused = false;
 let lastTime = null;
@@ -81,6 +84,7 @@ async function start(newEmulator, description) {
     saveLine.textContent = "";
   }
 
+  newEmulator.set_sample_rate(audio.sampleRate);
   emulator = newEmulator;
   pendingMs = 0;
   setPaused(false);
@@ -124,14 +128,23 @@ function onAnimationFrame(now) {
   lastTime = now;
   if (!emulator || paused) return;
 
-  pendingMs = Math.min(pendingMs + elapsed, MAX_CATCH_UP_MS);
+  // With sound on, the sound card's clock is the one that matters: the
+  // emulator runs up to 2% faster or slower to keep the audio queue steady.
+  pendingMs = Math.min(pendingMs + elapsed * audio.speed(), MAX_CATCH_UP_MS);
   let ran = false;
   while (pendingMs >= FRAME_MS) {
     emulator.run_frame();
+    if (audio.running) audio.push(emulator.audio_samples());
     pendingMs -= FRAME_MS;
     ran = true;
   }
   if (ran) draw();
+}
+
+// Browsers refuse to play sound until the user interacts with the page.
+async function enableAudio() {
+  await audio.start();
+  emulator?.set_sample_rate(audio.sampleRate);
 }
 
 function onKey(event, pressed) {
@@ -146,6 +159,10 @@ function onKey(event, pressed) {
 
 function releaseAllButtons() {
   for (let button = 0; button < 8; button++) emulator?.set_button(button, false);
+}
+
+for (const gesture of ["keydown", "pointerdown", "drop"]) {
+  window.addEventListener(gesture, enableAudio, { capture: true });
 }
 
 window.addEventListener("keydown", (event) => onKey(event, true));
@@ -168,6 +185,12 @@ document.getElementById("rom-input").addEventListener("change", (event) => {
 
 pauseButton.addEventListener("click", () => {
   setPaused(!paused);
+  canvas.focus();
+});
+
+muteButton.addEventListener("click", () => {
+  audio.setMuted(!audio.muted);
+  muteButton.textContent = audio.muted ? "Unmute" : "Mute";
   canvas.focus();
 });
 
@@ -207,5 +230,6 @@ window.glassbit = {
   get emulator() {
     return emulator;
   },
+  audio,
   loadRom,
 };

@@ -93,6 +93,17 @@ impl Emulator {
         self.gb.run_frame();
     }
 
+    /// Sets the audio sample rate, normally the `AudioContext`'s.
+    pub fn set_sample_rate(&mut self, hz: u32) {
+        self.gb.set_sample_rate(hz);
+    }
+
+    /// The sound of the last frame: interleaved stereo samples (left, right)
+    /// between -1 and 1, as a `Float32Array`.
+    pub fn audio_samples(&self) -> Vec<f32> {
+        self.gb.audio_samples().to_vec()
+    }
+
     /// Writes the screen as RGBA into `out`, which must hold
     /// `screen_width() * screen_height() * 4` bytes.
     pub fn copy_frame(&self, out: &mut [u8]) {
@@ -141,6 +152,17 @@ mod tests {
         emulator.set_button(4, false);
         assert!(!emulator.gb.is_pressed(Button::A));
         emulator.set_button(99, true);
+    }
+
+    #[test]
+    fn frames_carry_audio_at_the_requested_rate() {
+        let mut emulator = Emulator::demo();
+        emulator.set_sample_rate(44_100);
+        emulator.run_frame();
+        emulator.run_frame();
+        // 44100 Hz / 59.73 fps is about 738 stereo samples per frame.
+        let values = emulator.audio_samples().len();
+        assert!((2 * 730..=2 * 746).contains(&values), "{values}");
     }
 
     #[test]
