@@ -60,6 +60,16 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
   cycle more. Changing this breaks Mooneye `rapid_toggle` or `intr_timing`.
 - **Post-boot timer counter is `0xABC8`**, measured with Mooneye
   `boot_div-dmgABCmgb` (it is tied to the tick-before-access convention).
+- **The PPU renders one whole line when mode 3 starts** (no pixel FIFO). Mode
+  timing constants in `ppu.rs` (mode 3 at M-cycle 21 of the line, mode 0 at
+  64, line 0's OAM scan one cycle late) were fitted to Mooneye
+  `acceptance/ppu`; do not "correct" them to the dot counts in Pan Docs
+  without rerunning those tests. Mode 3 only grows with `SCX % 8`.
+- **The CPU is locked out of VRAM in mode 3 and of OAM in modes 2-3 and
+  during OAM DMA** (`CpuBus` reads give `0xFF`, writes are dropped);
+  `peek`/`poke` ignore the lockout.
+- **`run_frame` returns when VBlank starts**, or after one frame of time when
+  the LCD is off. The framebuffer holds shades 0-3, not colors.
 - **Opcodes are decoded by bit fields** (octal `x y z`), not a 256-entry table.
 - **STOP is a NOP** and **illegal opcodes lock the CPU** until something needs
   more.

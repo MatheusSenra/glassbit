@@ -7,7 +7,9 @@
 A Game Boy (DMG) emulator written in Rust that runs in the browser through
 WebAssembly, built to **show how the hardware works while the game runs**.
 
-> Status: early development. The CPU, interrupts and timer are done and tested; there is no video, sound or web frontend yet, so it cannot run games.
+> Status: early development. The CPU, interrupts, timer and video are done and tested. There is no web frontend, sound or joypad yet, so it cannot be played: for now it runs test ROMs from the command line.
+
+<p align="center"><img src="assets/dmg-acid2.png" alt="The dmg-acid2 test rendered by Glassbit" width="320"><br><em>The dmg-acid2 PPU test, rendered by Glassbit.</em></p>
 
 ## Goals
 
@@ -22,7 +24,7 @@ WebAssembly, built to **show how the hardware works while the game runs**.
 | --- | --- |
 | `crates/core` (`glassbit-core`) | The emulator. No browser, window or audio dependencies. |
 | `crates/web` (`glassbit-web`) | WebAssembly frontend (`wasm-bindgen`). A placeholder for now; canvas, input, audio and saves come in phase 5. |
-| `crates/runner` (`glassbit-runner`) | Headless native runner: runs a test ROM and reports whether it passed. |
+| `crates/runner` (`glassbit-runner`) | Headless native runner: runs a test ROM, reports whether it passed and can save the screen as a PNG. |
 
 ## Building
 
@@ -39,6 +41,9 @@ ROMs are missing. To run a single test ROM and see its verdict:
 ```bash
 cargo run --release -p glassbit-runner -- "test-roms/game-boy-test-roms/blargg/cpu_instrs/cpu_instrs.gb"
 ```
+
+Add `--screenshot out.png` to save the final screen, and `--reference ref.png`
+to pass or fail by comparing the screen with an image.
 
 To build the web frontend, install [wasm-pack](https://rustwasm.github.io/wasm-pack/) and run:
 
@@ -70,11 +75,14 @@ What passes today, all of it checked by `cargo test` in CI:
 | Blargg `cpu_instrs` | all 11 |
 | Blargg `instr_timing` | pass |
 | Blargg `mem_timing` | all 3 |
+| dmg-acid2 | pixel-exact match with the reference image |
 | Mooneye `acceptance/timer` | all 13 |
-| Mooneye `acceptance`, other | 15, covering interrupt and HALT timing and the post-boot state |
+| Mooneye `acceptance`, other | 43, covering instruction, interrupt, HALT, OAM DMA and PPU mode timing and the post-boot state |
 
-The remaining Mooneye acceptance tests need the PPU and OAM DMA, or target
-console models other than the DMG.
+Of the Mooneye acceptance tests that do not pass, most target console models
+other than the DMG. The rest are five PPU tests that need pixel-level timing
+(the PPU draws a whole line at once), two `-GS` timing tests, and two that
+depend on I/O registers and a mapper not implemented yet.
 
 ## Roadmap
 
@@ -82,7 +90,7 @@ console models other than the DMG.
 - [x] **Phase 1: Cartridge and bus.** Header parsing, ROM-only cartridge, full memory map.
 - [x] **Phase 2: CPU.** All opcodes, validated against SingleStepTests and the individual Blargg `cpu_instrs` ROMs; serial port; ROM banking for MBC1.
 - [x] **Phase 3: Interrupts and timer.** IME, HALT (and its bug), EI delay, DIV/TIMA/TMA/TAC. Blargg `instr_timing`, `mem_timing`, all of `cpu_instrs` and Mooneye timer tests.
-- [ ] **Phase 4: PPU.** Modes, STAT, background, window, sprites, OAM DMA. Pixel-exact `dmg-acid2`.
+- [x] **Phase 4: PPU.** Modes, STAT, background, window, sprites, OAM DMA. Pixel-exact `dmg-acid2`.
 - [ ] **Phase 5: Playable web frontend.** Canvas, frame loop, keyboard, ROM loading.
 - [ ] **Phase 6: Mappers and saves.** The rest of MBC1 (RAM, large ROMs), MBC3, MBC5, battery RAM persisted in the browser.
 - [ ] **Phase 7: Audio.** All four APU channels through an AudioWorklet.
