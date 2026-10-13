@@ -9,6 +9,7 @@ pub mod cartridge;
 pub mod cpu;
 pub mod interrupts;
 pub mod observer;
+pub mod ppu;
 pub mod serial;
 pub mod timer;
 
@@ -55,10 +56,6 @@ impl Button {
 pub struct GameBoy<O: Observer = NullObserver> {
     cpu: Cpu,
     bus: Bus<O>,
-    /// The cycle count at which the frame being emulated ends.
-    frame_end: u64,
-    /// One DMG shade (0 = lightest, 3 = darkest) per pixel, row by row.
-    framebuffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT],
     audio: Vec<f32>,
     /// Bit set = button held, indexed by [`Button`].
     buttons: u8,
@@ -78,8 +75,6 @@ impl<O: Observer> GameBoy<O> {
         Ok(Self {
             cpu: Cpu::post_boot(cartridge.header().header_checksum),
             bus: Bus::new(cartridge, observer),
-            frame_end: CYCLES_PER_FRAME,
-            framebuffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT],
             audio: Vec::new(),
             buttons: 0,
         })
@@ -125,21 +120,26 @@ impl<O: Observer> GameBoy<O> {
         self.bus.observer.instruction(&before, &self.cpu.regs);
     }
 
-    /// Emulates one video frame's worth of time.
+    /// Emulates until the PPU finishes drawing a frame (the start of VBlank).
     ///
-    /// Instructions are never cut short, so a frame may overshoot by a few
-    /// cycles; the next one is shortened by the same amount.
+    /// While the LCD is switched off no frame ever finishes, so this also
+    /// returns after one frame's worth of time.
     pub fn run_frame(&mut self) {
         self.audio.clear();
-        while self.bus.cycles() < self.frame_end {
+        let limit = self.bus.cycles() + CYCLES_PER_FRAME;
+        while self.bus.cycles() < limit {
             self.step();
+            if self.bus.take_frame_ready() {
+                break;
+            }
         }
-        self.frame_end += CYCLES_PER_FRAME;
     }
 
-    /// The last completed frame: `SCREEN_WIDTH * SCREEN_HEIGHT` shades in `0..=3`.
+    /// The screen: `SCREEN_WIDTH * SCREEN_HEIGHT` shades, row by row, where
+    /// 0 is the lightest and 3 the darkest. Complete right after
+    /// [`GameBoy::run_frame`] returns.
     pub fn framebuffer(&self) -> &[u8] {
-        &self.framebuffer
+        self.bus.ppu().framebuffer()
     }
 
     /// Audio samples produced by the last call to [`GameBoy::run_frame`].
@@ -225,15 +225,52 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_lasts_17556_cycles() {
+    fn frames_end_at_vblank_and_last_17556_cycles() {
         let rom = rom_running(&[]);
         let mut gb = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
         gb.run_frame();
-        assert!((CYCLES_PER_FRAME..CYCLES_PER_FRAME + 6).contains(&gb.cycles()));
-        for _ in 0..59 {
+        assert_eq!(gb.peek(0xFF44), 144, "stopped where VBlank begins");
+        let start = gb.cycles();
+        for _ in 0..60 {
             gb.run_frame();
         }
-        assert!((60 * CYCLES_PER_FRAME..60 * CYCLES_PER_FRAME + 6).contains(&gb.cycles()));
+        let elapsed = gb.cycles() - start;
+        // Instructions are never cut short, hence the small slack.
+        assert!((60 * CYCLES_PER_FRAME - 6..60 * CYCLES_PER_FRAME + 6).contains(&elapsed));
+    }
+
+    #[test]
+    fn run_frame_returns_even_with_the_lcd_off() {
+        // XOR A ; LDH (LCDC),A
+        let rom = rom_running(&[0xAF, 0xE0, 0x40]);
+        let mut gb = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        gb.run_frame();
+        let start = gb.cycles();
+        gb.run_frame();
+        assert!(gb.cycles() - start >= CYCLES_PER_FRAME);
+        assert_eq!(gb.peek(0xFF44), 0);
+    }
+
+    #[test]
+    fn draws_what_the_program_puts_in_video_memory() {
+        // Wait for VBlank, then make tile 0 solid black: every background
+        // tile is tile 0, so the whole screen turns black.
+        let rom = rom_running(&[
+            0xF0, 0x44, // LDH A,(LY)
+            0xFE, 0x90, // CP 144
+            0x20, 0xFA, // JR NZ,-6
+            0x21, 0x00, 0x80, // LD HL,0x8000
+            0x06, 0x10, // LD B,16
+            0x3E, 0xFF, // LD A,0xFF
+            0x22, // LD (HL+),A
+            0x05, // DEC B
+            0x20, 0xFC, // JR NZ,-4
+        ]);
+        let mut gb = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        gb.run_frame();
+        assert!(gb.framebuffer().iter().all(|&shade| shade == 0));
+        gb.run_frame();
+        assert!(gb.framebuffer().iter().all(|&shade| shade == 3));
     }
 
     #[derive(Default)]

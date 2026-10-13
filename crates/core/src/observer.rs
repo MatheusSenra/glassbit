@@ -6,6 +6,7 @@
 //! produces them is implemented.
 
 use crate::cpu::Registers;
+use crate::ppu::Mode;
 
 /// Receives events from the emulated hardware as they happen.
 pub trait Observer {
@@ -15,6 +16,9 @@ pub trait Observer {
     /// The CPU started serving an interrupt. `bit` is its bit in IF/IE; see
     /// [`crate::interrupts`] for the sources.
     fn interrupt(&mut self, _bit: u8) {}
+
+    /// The PPU entered a new mode while on line `ly`.
+    fn ppu_mode(&mut self, _mode: Mode, _ly: u8) {}
 
     /// A write landed on an I/O register (`0xFF00..=0xFF7F`) or on IE (`0xFFFF`).
     fn io_write(&mut self, _addr: u16, _old: u8, _new: u8) {}

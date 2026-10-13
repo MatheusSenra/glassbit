@@ -3,11 +3,11 @@
 //! | Range             | What lives there                         |
 //! | ----------------- | ---------------------------------------- |
 //! | `0x0000..=0x7FFF` | Cartridge ROM (through the mapper)       |
-//! | `0x8000..=0x9FFF` | Video RAM                                |
+//! | `0x8000..=0x9FFF` | Video RAM (owned by the PPU)             |
 //! | `0xA000..=0xBFFF` | Cartridge RAM (through the mapper)       |
 //! | `0xC000..=0xDFFF` | Work RAM                                 |
 //! | `0xE000..=0xFDFF` | Echo of `0xC000..=0xDDFF`                |
-//! | `0xFE00..=0xFE9F` | Object attribute memory (sprites)        |
+//! | `0xFE00..=0xFE9F` | Object attribute memory (owned by the PPU) |
 //! | `0xFEA0..=0xFEFF` | Unusable                                 |
 //! | `0xFF00..=0xFF7F` | I/O registers                            |
 //! | `0xFF80..=0xFFFE` | High RAM                                 |
@@ -15,9 +15,9 @@
 //!
 //! Reference: <https://gbdev.io/pandocs/Memory_Map.html>
 //!
-//! Most I/O registers are still plain storage holding their post-boot
-//! values. Each one gains its real behavior when the component that owns it
-//! (timer, PPU, joypad, APU...) is implemented.
+//! The joypad and sound registers are still plain storage holding their
+//! post-boot values; they gain real behavior when those components are
+//! implemented.
 //!
 //! [`Bus::peek`] and [`Bus::poke`] access memory without the passage of time.
 //! The CPU goes through the [`CpuBus`] implementation instead, where every
@@ -27,20 +27,21 @@ use crate::cartridge::Cartridge;
 use crate::cpu::CpuBus;
 use crate::interrupts;
 use crate::observer::{NullObserver, Observer};
+use crate::ppu::{self, Ppu};
 use crate::serial::{self, Serial};
 use crate::timer::{self, Timer};
 
-const LCDC: u16 = 0xFF40;
-const LY: u16 = 0xFF44;
-
-/// A scanline lasts 456 clock ticks, and there are 154 of them per frame
-/// (144 visible plus 10 of vertical blanking).
-const CYCLES_PER_LINE: u16 = 114;
-const LINES_PER_FRAME: u8 = 154;
+/// OAM DMA: writing a page number here copies 160 bytes from that page into
+/// OAM, one byte per M-cycle.
+const DMA: u16 = 0xFF46;
+const DMA_LENGTH: u8 = 160;
+/// M-cycles between the write to DMA and the first byte being copied.
+const DMA_START_DELAY: u8 = 2;
 
 /// I/O register values right after the DMG boot ROM hands control to the
 /// cartridge. Registers not listed here either belong to a component with
-/// its own state (serial, timer, interrupts) or are unmapped and read `0xFF`.
+/// its own state (serial, timer, interrupts, PPU) or are unmapped and read
+/// `0xFF`.
 ///
 /// Reference: <https://gbdev.io/pandocs/Power_Up_Sequence.html#hardware-registers>
 const POST_BOOT_IO: &[(u16, u8)] = &[
@@ -66,30 +67,16 @@ const POST_BOOT_IO: &[(u16, u8)] = &[
     (0xFF24, 0x77), // NR50
     (0xFF25, 0xF3), // NR51
     (0xFF26, 0xF1), // NR52
-    (0xFF40, 0x91), // LCDC
-    (0xFF41, 0x85), // STAT
-    (0xFF42, 0x00), // SCY
-    (0xFF43, 0x00), // SCX
-    (0xFF44, 0x00), // LY
-    (0xFF45, 0x00), // LYC
-    (0xFF46, 0xFF), // DMA
-    (0xFF47, 0xFC), // BGP
-    (0xFF4A, 0x00), // WY
-    (0xFF4B, 0x00), // WX
 ];
 
-const VRAM_SIZE: usize = 0x2000;
 const WRAM_SIZE: usize = 0x2000;
-const OAM_SIZE: usize = 0xA0;
 const IO_SIZE: usize = 0x80;
 const HRAM_SIZE: usize = 0x7F;
 
 /// Everything the CPU can address.
 pub struct Bus<O: Observer = NullObserver> {
     cartridge: Cartridge,
-    vram: [u8; VRAM_SIZE],
     wram: [u8; WRAM_SIZE],
-    oam: [u8; OAM_SIZE],
     io: [u8; IO_SIZE],
     hram: [u8; HRAM_SIZE],
     /// IF: one bit per interrupt source that is asking for service.
@@ -98,9 +85,20 @@ pub struct Bus<O: Observer = NullObserver> {
     interrupt_enable: u8,
     serial: Serial,
     timer: Timer,
-    /// M-cycles into the current scanline. Stands in for the PPU, which for
-    /// now only counts lines so that programs waiting on LY make progress.
-    line_cycles: u16,
+    ppu: Ppu,
+    /// The last value written to the DMA register.
+    dma_page: u8,
+    /// M-cycles until a requested DMA transfer starts; 0 when none is waiting.
+    dma_delay: u8,
+    /// Whether a transfer is copying bytes right now.
+    dma_active: bool,
+    /// The page the running transfer reads from.
+    dma_source: u8,
+    /// The next byte of the running transfer.
+    dma_index: u8,
+    /// A byte was copied in the current M-cycle, which keeps the CPU away
+    /// from OAM for that cycle.
+    dma_copying: bool,
     /// M-cycles elapsed since power on.
     cycles: u64,
     pub observer: O,
@@ -115,9 +113,7 @@ impl<O: Observer> Bus<O> {
         }
         Self {
             cartridge,
-            vram: [0; VRAM_SIZE],
             wram: [0; WRAM_SIZE],
-            oam: [0; OAM_SIZE],
             io,
             hram: [0; HRAM_SIZE],
             // The boot ROM leaves a VBlank request behind.
@@ -125,7 +121,13 @@ impl<O: Observer> Bus<O> {
             interrupt_enable: 0x00,
             serial: Serial::new(),
             timer: Timer::new(),
-            line_cycles: 0,
+            ppu: Ppu::new(),
+            dma_page: 0xFF,
+            dma_delay: 0,
+            dma_active: false,
+            dma_source: 0,
+            dma_index: 0,
+            dma_copying: false,
             cycles: 0,
             observer,
         }
@@ -133,6 +135,15 @@ impl<O: Observer> Bus<O> {
 
     pub fn cartridge(&self) -> &Cartridge {
         &self.cartridge
+    }
+
+    pub fn ppu(&self) -> &Ppu {
+        &self.ppu
+    }
+
+    /// Returns `true` once after each frame is fully drawn.
+    pub fn take_frame_ready(&mut self) -> bool {
+        self.ppu.take_frame_ready()
     }
 
     /// M-cycles elapsed since power on.
@@ -156,35 +167,69 @@ impl<O: Observer> Bus<O> {
             self.interrupt_flag |= interrupts::SERIAL;
         }
 
-        let lcd_on = self.io[(LCDC - 0xFF00) as usize] & 0x80 != 0;
-        let ly = &mut self.io[(LY - 0xFF00) as usize];
-        if lcd_on {
-            self.line_cycles += 1;
-            if self.line_cycles == CYCLES_PER_LINE {
-                self.line_cycles = 0;
-                *ly = (*ly + 1) % LINES_PER_FRAME;
+        let mode = self.ppu.mode();
+        self.ppu.tick();
+        if self.ppu.mode() != mode {
+            self.observer.ppu_mode(self.ppu.mode(), self.ppu.ly());
+        }
+        self.interrupt_flag |= self.ppu.take_interrupts();
+
+        self.tick_dma();
+    }
+
+    fn tick_dma(&mut self) {
+        // A new request does not stop a running transfer until it starts.
+        if self.dma_delay > 0 {
+            self.dma_delay -= 1;
+            if self.dma_delay == 0 {
+                self.dma_active = true;
+                self.dma_source = self.dma_page;
+                self.dma_index = 0;
             }
-        } else {
-            self.line_cycles = 0;
-            *ly = 0;
+        }
+        self.dma_copying = self.dma_active;
+        if self.dma_active {
+            let source = u16::from_be_bytes([self.dma_source, self.dma_index]);
+            // Pages above 0xDF are not decoded and read work RAM instead.
+            let value = match source {
+                0xE000..=0xFFFF => self.wram[(source - 0xE000) as usize],
+                _ => self.peek(source),
+            };
+            self.ppu.write_oam(0xFE00 + self.dma_index as u16, value);
+            self.dma_index += 1;
+            self.dma_active = self.dma_index < DMA_LENGTH;
         }
     }
 
-    /// Reads the byte the CPU would see at `addr`, without advancing time.
+    /// Whether the CPU is currently cut off from `addr`: reads return `0xFF`
+    /// and writes are lost. The PPU keeps video memory to itself while it is
+    /// using it, and a DMA transfer does the same with OAM.
+    fn cpu_locked_out(&self, addr: u16) -> bool {
+        match addr {
+            0x8000..=0x9FFF => self.ppu.vram_locked(),
+            0xFE00..=0xFE9F => self.dma_copying || self.ppu.oam_locked(),
+            _ => false,
+        }
+    }
+
+    /// Reads the byte the CPU would see at `addr`, without advancing time
+    /// and ignoring any lockout.
     pub fn peek(&self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x7FFF => self.cartridge.read_rom(addr),
-            0x8000..=0x9FFF => self.vram[(addr - 0x8000) as usize],
+            0x8000..=0x9FFF => self.ppu.read_vram(addr),
             0xA000..=0xBFFF => self.cartridge.read_ram(addr),
             0xC000..=0xDFFF => self.wram[(addr - 0xC000) as usize],
             0xE000..=0xFDFF => self.wram[(addr - 0xE000) as usize],
-            0xFE00..=0xFE9F => self.oam[(addr - 0xFE00) as usize],
+            0xFE00..=0xFE9F => self.ppu.read_oam(addr),
             // On DMG this area reads zero.
             0xFEA0..=0xFEFF => 0x00,
             serial::SB | serial::SC => self.serial.read(addr),
             timer::DIV..=timer::TAC => self.timer.read(addr),
             // The upper three bits do not exist and read as 1.
             interrupts::IF => self.interrupt_flag | !interrupts::MASK,
+            DMA => self.dma_page,
+            ppu::LCDC..=ppu::WX => self.ppu.read_register(addr),
             0xFF00..=0xFF7F => self.io[(addr - 0xFF00) as usize],
             0xFF80..=0xFFFE => self.hram[(addr - 0xFF80) as usize],
             interrupts::IE => self.interrupt_enable,
@@ -195,11 +240,11 @@ impl<O: Observer> Bus<O> {
     pub fn poke(&mut self, addr: u16, value: u8) {
         match addr {
             0x0000..=0x7FFF => self.cartridge.write_rom(addr, value),
-            0x8000..=0x9FFF => self.vram[(addr - 0x8000) as usize] = value,
+            0x8000..=0x9FFF => self.ppu.write_vram(addr, value),
             0xA000..=0xBFFF => self.cartridge.write_ram(addr, value),
             0xC000..=0xDFFF => self.wram[(addr - 0xC000) as usize] = value,
             0xE000..=0xFDFF => self.wram[(addr - 0xE000) as usize] = value,
-            0xFE00..=0xFE9F => self.oam[(addr - 0xFE00) as usize] = value,
+            0xFE00..=0xFE9F => self.ppu.write_oam(addr, value),
             0xFEA0..=0xFEFF => {}
             0xFF00..=0xFF7F => {
                 let old = self.peek(addr);
@@ -207,8 +252,11 @@ impl<O: Observer> Bus<O> {
                     serial::SB | serial::SC => self.serial.write(addr, value),
                     timer::DIV..=timer::TAC => self.timer.write(addr, value),
                     interrupts::IF => self.interrupt_flag = value & interrupts::MASK,
-                    // LY is read-only.
-                    LY => {}
+                    DMA => {
+                        self.dma_page = value;
+                        self.dma_delay = DMA_START_DELAY;
+                    }
+                    ppu::LCDC..=ppu::WX => self.ppu.write_register(addr, value),
                     _ => self.io[(addr - 0xFF00) as usize] = value,
                 }
                 self.observer.io_write(addr, old, value);
@@ -227,11 +275,17 @@ impl<O: Observer> Bus<O> {
 impl<O: Observer> CpuBus for Bus<O> {
     fn read(&mut self, addr: u16) -> u8 {
         self.tick();
+        if self.cpu_locked_out(addr) {
+            return 0xFF;
+        }
         self.peek(addr)
     }
 
     fn write(&mut self, addr: u16, value: u8) {
         self.tick();
+        if self.cpu_locked_out(addr) {
+            return;
+        }
         self.poke(addr, value);
     }
 
@@ -363,6 +417,7 @@ mod tests {
     struct Recorder {
         writes: Vec<(u16, u8, u8)>,
         interrupts: Vec<u8>,
+        modes: Vec<(ppu::Mode, u8)>,
     }
 
     impl Observer for Recorder {
@@ -372,6 +427,10 @@ mod tests {
 
         fn interrupt(&mut self, bit: u8) {
             self.interrupts.push(bit);
+        }
+
+        fn ppu_mode(&mut self, mode: ppu::Mode, ly: u8) {
+            self.modes.push((mode, ly));
         }
     }
 
@@ -393,6 +452,18 @@ mod tests {
 
         bus.acknowledge_interrupt(0x01);
         assert_eq!(bus.observer.interrupts, vec![0x01]);
+
+        for _ in 0..114 {
+            bus.idle();
+        }
+        assert_eq!(
+            bus.observer.modes,
+            vec![
+                (ppu::Mode::Drawing, 0),
+                (ppu::Mode::HBlank, 0),
+                (ppu::Mode::OamScan, 1)
+            ]
+        );
     }
 
     #[test]
@@ -468,6 +539,75 @@ mod tests {
         bus.idle();
         assert_eq!(bus.cycles(), 3);
         assert_eq!(bus.peek(0xC000), 0x01);
+    }
+
+    #[test]
+    fn dma_copies_a_page_into_oam_after_a_short_delay() {
+        let mut bus = bus();
+        // LCD off, so the PPU does not lock OAM as well.
+        bus.poke(0xFF40, 0x00);
+        for i in 0..160u16 {
+            bus.poke(0xC100 + i, i as u8 ^ 0x5A);
+        }
+        CpuBus::write(&mut bus, 0xFF46, 0xC1);
+        assert_eq!(bus.peek(0xFF46), 0xC1);
+
+        bus.idle();
+        assert_eq!(bus.peek(0xFE00), 0x00, "still waiting to start");
+        bus.idle();
+        assert_eq!(bus.peek(0xFE00), 0x5A, "first byte copied");
+        assert_eq!(CpuBus::read(&mut bus, 0xFE00), 0xFF, "OAM is cut off");
+        for _ in 0..158 {
+            bus.idle();
+        }
+        assert_eq!(bus.peek(0xFE9F), 159 ^ 0x5A);
+        assert_eq!(CpuBus::read(&mut bus, 0xFE9F), 159 ^ 0x5A, "transfer over");
+    }
+
+    #[test]
+    fn ppu_locks_the_cpu_out_of_video_memory_while_using_it() {
+        let mut bus = bus();
+        bus.poke(0x8000, 0x11);
+        bus.poke(0xFE00, 0x22);
+
+        // Mode 2: OAM is taken, VRAM is still free.
+        assert_eq!(CpuBus::read(&mut bus, 0xFE00), 0xFF);
+        assert_eq!(CpuBus::read(&mut bus, 0x8000), 0x11);
+        // Mode 3: both are taken, and writes are lost.
+        for _ in 0..30 {
+            bus.idle();
+        }
+        assert_eq!(CpuBus::read(&mut bus, 0x8000), 0xFF);
+        CpuBus::write(&mut bus, 0x8000, 0x99);
+        // Mode 0: both are free again.
+        for _ in 0..40 {
+            bus.idle();
+        }
+        assert_eq!(CpuBus::read(&mut bus, 0x8000), 0x11);
+        assert_eq!(CpuBus::read(&mut bus, 0xFE00), 0x22);
+    }
+
+    #[test]
+    fn vram_oam_and_ppu_registers_reach_the_ppu() {
+        let mut bus = bus();
+        bus.poke(0x8000, 0x12);
+        bus.poke(0xFE00, 0x34);
+        bus.poke(0xFF42, 0x56);
+        assert_eq!(bus.ppu().read_vram(0x8000), 0x12);
+        assert_eq!(bus.ppu().read_oam(0xFE00), 0x34);
+        assert_eq!(bus.ppu().read_register(0xFF42), 0x56);
+    }
+
+    #[test]
+    fn vblank_requests_an_interrupt_and_reports_the_frame() {
+        let mut bus = bus();
+        bus.poke(0xFF0F, 0x00);
+        for _ in 0..144 * 114 {
+            bus.idle();
+        }
+        assert_eq!(bus.peek(0xFF0F) & 0x01, 0x01);
+        assert!(bus.take_frame_ready());
+        assert!(!bus.take_frame_ready());
     }
 
     #[test]
