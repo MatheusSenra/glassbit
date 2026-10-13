@@ -7,7 +7,9 @@
 pub mod bus;
 pub mod cartridge;
 pub mod cpu;
+pub mod demo;
 pub mod interrupts;
+pub mod joypad;
 pub mod observer;
 pub mod ppu;
 pub mod serial;
@@ -16,6 +18,7 @@ pub mod timer;
 use bus::Bus;
 use cartridge::{Cartridge, CartridgeError, Header};
 use cpu::Cpu;
+pub use joypad::Button;
 use observer::{NullObserver, Observer};
 
 /// Version of the core crate.
@@ -30,25 +33,6 @@ pub const SCREEN_HEIGHT: usize = 144;
 /// 1,048,576 M-cycles per second gives about 59.73 frames per second.
 pub const CYCLES_PER_FRAME: u64 = 154 * 114;
 
-/// The eight Game Boy buttons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Button {
-    Right,
-    Left,
-    Up,
-    Down,
-    A,
-    B,
-    Select,
-    Start,
-}
-
-impl Button {
-    fn mask(self) -> u8 {
-        1 << self as u8
-    }
-}
-
 /// A Game Boy with a cartridge inserted.
 ///
 /// The type parameter is the [`Observer`] that receives inspection events;
@@ -57,8 +41,6 @@ pub struct GameBoy<O: Observer = NullObserver> {
     cpu: Cpu,
     bus: Bus<O>,
     audio: Vec<f32>,
-    /// Bit set = button held, indexed by [`Button`].
-    buttons: u8,
 }
 
 impl GameBoy {
@@ -76,7 +58,6 @@ impl<O: Observer> GameBoy<O> {
             cpu: Cpu::post_boot(cartridge.header().header_checksum),
             bus: Bus::new(cartridge, observer),
             audio: Vec::new(),
-            buttons: 0,
         })
     }
 
@@ -149,16 +130,12 @@ impl<O: Observer> GameBoy<O> {
 
     /// Updates whether `button` is currently held.
     pub fn set_button(&mut self, button: Button, pressed: bool) {
-        if pressed {
-            self.buttons |= button.mask();
-        } else {
-            self.buttons &= !button.mask();
-        }
+        self.bus.set_button(button, pressed);
     }
 
     /// Whether `button` is currently held.
     pub fn is_pressed(&self, button: Button) -> bool {
-        self.buttons & button.mask() != 0
+        self.bus.is_pressed(button)
     }
 }
 

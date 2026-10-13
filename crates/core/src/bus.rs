@@ -15,9 +15,8 @@
 //!
 //! Reference: <https://gbdev.io/pandocs/Memory_Map.html>
 //!
-//! The joypad and sound registers are still plain storage holding their
-//! post-boot values; they gain real behavior when those components are
-//! implemented.
+//! The sound registers are still plain storage holding their post-boot
+//! values; they gain real behavior when the APU is implemented.
 //!
 //! [`Bus::peek`] and [`Bus::poke`] access memory without the passage of time.
 //! The CPU goes through the [`CpuBus`] implementation instead, where every
@@ -26,6 +25,7 @@
 use crate::cartridge::Cartridge;
 use crate::cpu::CpuBus;
 use crate::interrupts;
+use crate::joypad::{self, Button, Joypad};
 use crate::observer::{NullObserver, Observer};
 use crate::ppu::{self, Ppu};
 use crate::serial::{self, Serial};
@@ -40,12 +40,11 @@ const DMA_START_DELAY: u8 = 2;
 
 /// I/O register values right after the DMG boot ROM hands control to the
 /// cartridge. Registers not listed here either belong to a component with
-/// its own state (serial, timer, interrupts, PPU) or are unmapped and read
+/// its own state (joypad, serial, timer, interrupts, PPU) or are unmapped and read
 /// `0xFF`.
 ///
 /// Reference: <https://gbdev.io/pandocs/Power_Up_Sequence.html#hardware-registers>
 const POST_BOOT_IO: &[(u16, u8)] = &[
-    (0xFF00, 0xCF), // P1
     (0xFF10, 0x80), // NR10
     (0xFF11, 0xBF), // NR11
     (0xFF12, 0xF3), // NR12
@@ -83,6 +82,7 @@ pub struct Bus<O: Observer = NullObserver> {
     interrupt_flag: u8,
     /// IE: which sources the program wants to be interrupted by.
     interrupt_enable: u8,
+    joypad: Joypad,
     serial: Serial,
     timer: Timer,
     ppu: Ppu,
@@ -119,6 +119,7 @@ impl<O: Observer> Bus<O> {
             // The boot ROM leaves a VBlank request behind.
             interrupt_flag: interrupts::VBLANK,
             interrupt_enable: 0x00,
+            joypad: Joypad::new(),
             serial: Serial::new(),
             timer: Timer::new(),
             ppu: Ppu::new(),
@@ -135,6 +136,18 @@ impl<O: Observer> Bus<O> {
 
     pub fn cartridge(&self) -> &Cartridge {
         &self.cartridge
+    }
+
+    /// Updates whether `button` is held, requesting the joypad interrupt
+    /// when the program is listening for it.
+    pub fn set_button(&mut self, button: Button, pressed: bool) {
+        if self.joypad.set_button(button, pressed) {
+            self.interrupt_flag |= interrupts::JOYPAD;
+        }
+    }
+
+    pub fn is_pressed(&self, button: Button) -> bool {
+        self.joypad.is_pressed(button)
     }
 
     pub fn ppu(&self) -> &Ppu {
@@ -224,13 +237,14 @@ impl<O: Observer> Bus<O> {
             0xFE00..=0xFE9F => self.ppu.read_oam(addr),
             // On DMG this area reads zero.
             0xFEA0..=0xFEFF => 0x00,
+            joypad::P1 => self.joypad.read(),
             serial::SB | serial::SC => self.serial.read(addr),
             timer::DIV..=timer::TAC => self.timer.read(addr),
             // The upper three bits do not exist and read as 1.
             interrupts::IF => self.interrupt_flag | !interrupts::MASK,
             DMA => self.dma_page,
             ppu::LCDC..=ppu::WX => self.ppu.read_register(addr),
-            0xFF00..=0xFF7F => self.io[(addr - 0xFF00) as usize],
+            0xFF01..=0xFF7F => self.io[(addr - 0xFF00) as usize],
             0xFF80..=0xFFFE => self.hram[(addr - 0xFF80) as usize],
             interrupts::IE => self.interrupt_enable,
         }
@@ -249,6 +263,11 @@ impl<O: Observer> Bus<O> {
             0xFF00..=0xFF7F => {
                 let old = self.peek(addr);
                 match addr {
+                    joypad::P1 => {
+                        if self.joypad.write(value) {
+                            self.interrupt_flag |= interrupts::JOYPAD;
+                        }
+                    }
                     serial::SB | serial::SC => self.serial.write(addr, value),
                     timer::DIV..=timer::TAC => self.timer.write(addr, value),
                     interrupts::IF => self.interrupt_flag = value & interrupts::MASK,
@@ -474,6 +493,17 @@ mod tests {
         bus.poke(0xFF01, b'x');
         bus.poke(0xFF02, 0x81);
         assert_eq!(bus.take_serial_output(), b"x");
+    }
+
+    #[test]
+    fn joypad_is_mapped_and_requests_its_interrupt() {
+        let mut bus = bus();
+        bus.poke(0xFF0F, 0x00);
+        bus.poke(0xFF00, 0x10);
+        bus.set_button(Button::Start, true);
+        assert_eq!(bus.peek(0xFF00), 0xC0 | 0x10 | 0b0111);
+        assert_eq!(bus.peek(0xFF0F) & 0x10, 0x10);
+        assert!(bus.is_pressed(Button::Start));
     }
 
     #[test]
