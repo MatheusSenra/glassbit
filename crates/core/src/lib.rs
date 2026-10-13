@@ -3,8 +3,14 @@
 //! This crate knows nothing about browsers, windows or audio devices. A
 //! frontend loads a ROM, feeds button state in, runs one frame at a time and
 //! reads the framebuffer and audio samples back out.
-//!
-//! Phase 0 only fixes the shape of the public API; emulation starts in Phase 1.
+
+pub mod bus;
+pub mod cartridge;
+pub mod observer;
+
+use bus::Bus;
+use cartridge::{Cartridge, CartridgeError, Header};
+use observer::{NullObserver, Observer};
 
 /// Version of the core crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -34,8 +40,11 @@ impl Button {
 }
 
 /// A Game Boy with a cartridge inserted.
-pub struct GameBoy {
-    rom: Vec<u8>,
+///
+/// The type parameter is the [`Observer`] that receives inspection events;
+/// the default [`NullObserver`] costs nothing.
+pub struct GameBoy<O: Observer = NullObserver> {
+    bus: Bus<O>,
     /// One DMG shade (0 = lightest, 3 = darkest) per pixel, row by row.
     framebuffer: [u8; SCREEN_WIDTH * SCREEN_HEIGHT],
     audio: Vec<f32>,
@@ -44,24 +53,40 @@ pub struct GameBoy {
 }
 
 impl GameBoy {
-    /// Creates a console with no cartridge inserted.
-    pub fn new() -> Self {
-        Self {
-            rom: Vec::new(),
+    /// Powers on a console with the given ROM image inserted.
+    pub fn new(rom: &[u8]) -> Result<Self, CartridgeError> {
+        Self::with_observer(rom, NullObserver)
+    }
+}
+
+impl<O: Observer> GameBoy<O> {
+    /// Like [`GameBoy::new`], reporting hardware events to `observer`.
+    pub fn with_observer(rom: &[u8], observer: O) -> Result<Self, CartridgeError> {
+        let cartridge = Cartridge::new(rom)?;
+        Ok(Self {
+            bus: Bus::new(cartridge, observer),
             framebuffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT],
             audio: Vec::new(),
             buttons: 0,
-        }
+        })
     }
 
-    /// Inserts a cartridge. Header parsing and mappers arrive in Phase 1.
-    pub fn load_rom(&mut self, rom: &[u8]) {
-        self.rom = rom.to_vec();
+    /// The header of the inserted cartridge.
+    pub fn header(&self) -> &Header {
+        self.bus.cartridge().header()
     }
 
-    /// Size in bytes of the loaded ROM image.
-    pub fn rom_len(&self) -> usize {
-        self.rom.len()
+    /// Reads a byte from the memory map, as the CPU would see it.
+    pub fn peek(&self, addr: u16) -> u8 {
+        self.bus.read(addr)
+    }
+
+    pub fn observer(&self) -> &O {
+        &self.bus.observer
+    }
+
+    pub fn observer_mut(&mut self) -> &mut O {
+        &mut self.bus.observer
     }
 
     /// Emulates one video frame (70224 T-cycles). Does nothing until the CPU exists.
@@ -94,25 +119,23 @@ impl GameBoy {
     }
 }
 
-impl Default for GameBoy {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cartridge::test_util::RomBuilder;
+
+    fn gameboy() -> GameBoy {
+        GameBoy::new(&RomBuilder::new().title("LIBTEST").build()).unwrap_or_else(|e| panic!("{e}"))
+    }
 
     #[test]
     fn framebuffer_covers_the_whole_screen() {
-        let gb = GameBoy::new();
-        assert_eq!(gb.framebuffer().len(), 160 * 144);
+        assert_eq!(gameboy().framebuffer().len(), 160 * 144);
     }
 
     #[test]
     fn buttons_are_tracked_independently() {
-        let mut gb = GameBoy::new();
+        let mut gb = gameboy();
         gb.set_button(Button::A, true);
         gb.set_button(Button::Start, true);
         gb.set_button(Button::A, false);
@@ -121,9 +144,19 @@ mod tests {
     }
 
     #[test]
-    fn load_rom_keeps_the_image() {
-        let mut gb = GameBoy::new();
-        gb.load_rom(&[0; 0x8000]);
-        assert_eq!(gb.rom_len(), 0x8000);
+    fn exposes_the_cartridge_header_and_memory() {
+        let gb = gameboy();
+        assert_eq!(gb.header().title, "LIBTEST");
+        assert_eq!(gb.peek(0x0000), 0x00);
+        assert_eq!(gb.peek(0x0134), b'L');
+        assert_eq!(gb.peek(0xFF40), 0x91);
+    }
+
+    #[test]
+    fn rejects_an_empty_rom() {
+        assert_eq!(
+            GameBoy::new(&[]).err(),
+            Some(CartridgeError::TooSmall { len: 0 })
+        );
     }
 }
