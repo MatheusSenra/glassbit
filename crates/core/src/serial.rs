@@ -5,6 +5,8 @@
 //!
 //! Reference: <https://gbdev.io/pandocs/Serial_Data_Transfer_(Link_Cable).html>
 
+use crate::state::{Reader, StateError, Writer};
+
 /// Serial transfer data.
 pub const SB: u16 = 0xFF01;
 /// Serial transfer control: bit 7 starts a transfer, bit 0 selects the
@@ -69,6 +71,22 @@ impl Serial {
     /// Returns the bytes sent since the last call.
     pub fn take_output(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.output)
+    }
+}
+
+impl Serial {
+    /// Bytes already sent are output, not state, and are left out.
+    pub(crate) fn save_state(&self, w: &mut Writer) {
+        w.u8(self.sb);
+        w.u8(self.sc);
+        w.u16(self.remaining);
+    }
+
+    pub(crate) fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.sb = r.u8()?;
+        self.sc = r.u8()?;
+        self.remaining = r.u16()?;
+        Ok(())
     }
 }
 

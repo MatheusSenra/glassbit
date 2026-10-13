@@ -1,6 +1,7 @@
 //! Cartridges with no mapper: 32 KiB of ROM mapped directly, plus optional RAM.
 
 use super::Mbc;
+use crate::state::{Reader, StateError, Writer};
 
 const RAM_START: u16 = 0xA000;
 
@@ -60,6 +61,14 @@ impl Mbc for RomOnly {
 
     fn ram_mut(&mut self) -> &mut [u8] {
         &mut self.ram
+    }
+
+    fn save_state(&self, w: &mut Writer) {
+        w.bytes(&self.ram);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        r.bytes(&mut self.ram)
     }
 }
 

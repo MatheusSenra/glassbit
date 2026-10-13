@@ -8,6 +8,8 @@ mod rom_only;
 
 use std::fmt;
 
+use crate::state::{Reader, StateError, Writer};
+
 pub use header::{CartridgeType, CgbSupport, Header, MapperKind};
 use mbc1::Mbc1;
 use mbc3::Mbc3;
@@ -34,6 +36,10 @@ pub trait Mbc {
     /// what a battery keeps alive.
     fn ram(&self) -> &[u8];
     fn ram_mut(&mut self) -> &mut [u8];
+    /// Writes the mapper's registers and RAM for a save state.
+    fn save_state(&self, w: &mut Writer);
+    /// Reads back what [`Mbc::save_state`] wrote.
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError>;
 }
 
 /// Why a ROM image could not be turned into a cartridge.
@@ -172,6 +178,17 @@ impl Cartridge {
         let len = ram.len().min(data.len());
         ram[..len].copy_from_slice(&data[..len]);
         true
+    }
+
+    pub(crate) fn save_state(&self, w: &mut Writer) {
+        self.mbc.save_state(w);
+    }
+
+    pub(crate) fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.mbc.load_state(r)?;
+        // The RAM just changed under the frontend's feet: have it stored.
+        self.ram_dirty = true;
+        Ok(())
     }
 
     /// Returns `true` if battery-backed RAM was written since the last call.

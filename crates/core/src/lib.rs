@@ -15,6 +15,7 @@ pub mod joypad;
 pub mod observer;
 pub mod ppu;
 pub mod serial;
+pub mod state;
 pub mod timer;
 
 use bus::Bus;
@@ -22,6 +23,7 @@ use cartridge::{Cartridge, CartridgeError, Header};
 use cpu::Cpu;
 pub use joypad::Button;
 use observer::{NullObserver, Observer};
+use state::{Reader, StateError, Writer};
 
 /// Version of the core crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -200,6 +202,48 @@ impl<O: Observer> GameBoy<O> {
     /// frontend knows when to store it again.
     pub fn take_save_dirty(&mut self) -> bool {
         self.bus.cartridge_mut().take_save_dirty()
+    }
+
+    /// Captures the whole machine as bytes: a save state. See [`state`]
+    /// for the format.
+    pub fn save_state(&self) -> Vec<u8> {
+        let header = self.header();
+        let mut w = Writer::new();
+        w.bytes(&state::MAGIC);
+        w.u8(state::VERSION);
+        w.u16(header.global_checksum);
+        w.u8(header.header_checksum);
+        self.cpu.save_state(&mut w);
+        self.bus.save_state(&mut w);
+        w.finish()
+    }
+
+    /// Restores a state captured by [`GameBoy::save_state`] from the same
+    /// cartridge. Buttons held at the moment of loading stay held.
+    ///
+    /// The header is checked before anything is touched, so a state from
+    /// another game or version is rejected cleanly. If the rest turns out
+    /// to be damaged the machine is left half restored and should be
+    /// discarded.
+    pub fn load_state(&mut self, data: &[u8]) -> Result<(), StateError> {
+        let mut r = Reader::new(data);
+        let mut magic = [0; 4];
+        if r.bytes(&mut magic).is_err() || magic != state::MAGIC {
+            return Err(StateError::NotAState);
+        }
+        let version = r.u8()?;
+        if version != state::VERSION {
+            return Err(StateError::UnsupportedVersion(version));
+        }
+        let header = self.header();
+        if (r.u16()?, r.u8()?) != (header.global_checksum, header.header_checksum) {
+            return Err(StateError::WrongCartridge);
+        }
+        self.cpu.load_state(&mut r)?;
+        self.bus.load_state(&mut r)?;
+        r.finish()?;
+        self.audio.clear();
+        Ok(())
     }
 
     /// Updates whether `button` is currently held.
@@ -493,6 +537,140 @@ mod tests {
         assert_eq!(running.disassemble(0x0101).to_string(), "JP $0150");
         assert_eq!(running.disassemble(0x0150).to_string(), "LD A,$42");
         assert_eq!(gb.disassemble(0x0100).length, 1);
+    }
+
+    /// Runs `frames` frames and collects everything observable about them.
+    fn trace(gb: &mut GameBoy, frames: usize) -> Vec<(Vec<u8>, Vec<f32>, Cpu, u64)> {
+        (0..frames)
+            .map(|_| {
+                gb.run_frame();
+                (
+                    gb.framebuffer().to_vec(),
+                    gb.audio_samples().to_vec(),
+                    *gb.cpu(),
+                    gb.cycles(),
+                )
+            })
+            .collect()
+    }
+
+    /// Compares two traces part by part, so a failure names what diverged
+    /// instead of printing whole framebuffers.
+    fn assert_same(
+        actual: &[(Vec<u8>, Vec<f32>, Cpu, u64)],
+        expected: &[(Vec<u8>, Vec<f32>, Cpu, u64)],
+    ) {
+        assert_eq!(actual.len(), expected.len());
+        for (frame, (a, e)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(a.3, e.3, "cycle count, frame {frame}");
+            assert_eq!(a.2, e.2, "CPU, frame {frame}");
+            assert!(a.0 == e.0, "screen differs in frame {frame}");
+            assert!(a.1 == e.1, "audio differs in frame {frame}");
+        }
+    }
+
+    #[test]
+    fn a_loaded_state_continues_exactly_like_the_original() {
+        let rom = demo::rom();
+        let mut original = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        original.set_button(Button::Right, true);
+        // Stop in the middle of the chime, with the sprite moving.
+        for _ in 0..20 {
+            original.run_frame();
+        }
+        let state = original.save_state();
+
+        let mut restored = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        restored.set_button(Button::Right, true);
+        assert_eq!(restored.load_state(&state), Ok(()));
+        assert_eq!(
+            restored.save_state(),
+            state,
+            "saving again gives the same bytes"
+        );
+
+        assert_same(&trace(&mut restored, 40), &trace(&mut original, 40));
+    }
+
+    #[test]
+    fn loading_rewinds_a_running_game() {
+        let mut gb = GameBoy::new(&demo::rom()).unwrap_or_else(|e| panic!("{e}"));
+        for _ in 0..15 {
+            gb.run_frame();
+        }
+        let state = gb.save_state();
+        let expected = trace(&mut gb, 10);
+        // Wander off, then come back.
+        gb.set_button(Button::Down, true);
+        trace(&mut gb, 25);
+        gb.set_button(Button::Down, false);
+        assert_eq!(gb.load_state(&state), Ok(()));
+        assert_same(&trace(&mut gb, 10), &expected);
+    }
+
+    #[test]
+    fn mapper_registers_and_ram_survive_a_save_state() {
+        // (cartridge type, bank to select)
+        for (code, bank) in [(0x03u8, 3u8), (0x13, 5), (0x1B, 6)] {
+            let rom = RomBuilder::new()
+                .cartridge_type(code)
+                .rom_size_code(2)
+                .ram_size_code(3)
+                .build();
+            let mut gb = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+            gb.bus.poke(0x0000, 0x0A);
+            gb.bus.poke(0x2000, bank);
+            gb.bus.poke(0xA010, 0x5A);
+            let state = gb.save_state();
+
+            let mut restored = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(restored.load_state(&state), Ok(()), "type {code:#04x}");
+            assert_eq!(restored.rom_bank(), bank as u16, "type {code:#04x}");
+            assert_eq!(restored.peek(0xA010), 0x5A, "type {code:#04x}");
+            assert!(
+                restored.take_save_dirty(),
+                "the frontend must store the RAM"
+            );
+        }
+    }
+
+    #[test]
+    fn states_from_elsewhere_are_rejected_before_anything_changes() {
+        let mut gb = gameboy();
+        let state = gb.save_state();
+        let before = *gb.cpu();
+
+        assert_eq!(gb.load_state(b"not a state"), Err(StateError::NotAState));
+        assert_eq!(gb.load_state(&[]), Err(StateError::NotAState));
+
+        let mut newer = state.clone();
+        newer[4] = state::VERSION + 1;
+        assert_eq!(
+            gb.load_state(&newer),
+            Err(StateError::UnsupportedVersion(state::VERSION + 1))
+        );
+
+        let other = GameBoy::new(&demo::rom()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            gb.load_state(&other.save_state()),
+            Err(StateError::WrongCartridge)
+        );
+        assert_eq!(*gb.cpu(), before);
+    }
+
+    #[test]
+    fn damaged_states_are_reported() {
+        let mut gb = gameboy();
+        let state = gb.save_state();
+
+        assert_eq!(
+            gb.load_state(&state[..state.len() - 1]),
+            Err(StateError::Corrupt)
+        );
+        let mut longer = state.clone();
+        longer.push(0);
+        assert_eq!(gb.load_state(&longer), Err(StateError::Corrupt));
+        assert_eq!(gb.load_state(&state), Ok(()));
     }
 
     #[test]

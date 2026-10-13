@@ -12,6 +12,7 @@ mod execute;
 mod registers;
 
 use crate::interrupts;
+use crate::state::{Reader, StateError, Writer};
 
 pub use registers::{Registers, FLAG_C, FLAG_H, FLAG_N, FLAG_Z};
 
@@ -166,6 +167,52 @@ impl Cpu {
         let hi = bus.read(self.regs.sp);
         self.regs.sp = self.regs.sp.wrapping_add(1);
         u16::from_le_bytes([lo, hi])
+    }
+}
+
+impl Cpu {
+    pub(crate) fn save_state(&self, w: &mut Writer) {
+        let regs = &self.regs;
+        for value in [
+            regs.a, regs.f, regs.b, regs.c, regs.d, regs.e, regs.h, regs.l,
+        ] {
+            w.u8(value);
+        }
+        w.u16(regs.sp);
+        w.u16(regs.pc);
+        for flag in [
+            self.ime,
+            self.ime_pending,
+            self.halted,
+            self.halt_bug,
+            self.locked,
+        ] {
+            w.bool(flag);
+        }
+    }
+
+    pub(crate) fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        let regs = &mut self.regs;
+        for register in [
+            &mut regs.a,
+            &mut regs.f,
+            &mut regs.b,
+            &mut regs.c,
+            &mut regs.d,
+            &mut regs.e,
+            &mut regs.h,
+            &mut regs.l,
+        ] {
+            *register = r.u8()?;
+        }
+        regs.sp = r.u16()?;
+        regs.pc = r.u16()?;
+        self.ime = r.bool()?;
+        self.ime_pending = r.bool()?;
+        self.halted = r.bool()?;
+        self.halt_bug = r.bool()?;
+        self.locked = r.bool()?;
+        Ok(())
     }
 }
 

@@ -25,6 +25,7 @@
 //! Reference: <https://gbdev.io/pandocs/Rendering.html>
 
 use crate::interrupts;
+use crate::state::{Reader, StateError, Writer};
 use crate::{SCREEN_HEIGHT, SCREEN_WIDTH};
 
 pub const LCDC: u16 = 0xFF40;
@@ -498,6 +499,84 @@ fn color_number(low: u8, high: u8, bit: u8) -> u8 {
 /// Looks a color number up in a palette register (2 bits per color).
 fn shade(palette: u8, color: u8) -> u8 {
     palette >> (color * 2) & 0x03
+}
+
+impl Ppu {
+    pub(crate) fn save_state(&self, w: &mut Writer) {
+        w.bytes(&self.vram);
+        w.bytes(&self.oam);
+        for register in [
+            self.lcdc,
+            self.stat_sources,
+            self.scy,
+            self.scx,
+            self.ly,
+            self.lyc,
+            self.bgp,
+            self.obp0,
+            self.obp1,
+            self.wy,
+            self.wx,
+        ] {
+            w.u8(register);
+        }
+        w.u8(self.mode as u8);
+        w.u8(self.line_cycle);
+        w.bool(self.stat_line);
+        w.u8(self.drawing_penalty);
+        w.bool(self.vblank_started);
+        w.bool(self.window_triggered);
+        w.u8(self.window_line);
+        w.u8(self.interrupts);
+        w.bool(self.frame_ready);
+        w.bytes(&self.framebuffer);
+    }
+
+    pub(crate) fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        r.bytes(&mut self.vram)?;
+        r.bytes(&mut self.oam)?;
+        for register in [
+            &mut self.lcdc,
+            &mut self.stat_sources,
+            &mut self.scy,
+            &mut self.scx,
+            &mut self.ly,
+            &mut self.lyc,
+            &mut self.bgp,
+            &mut self.obp0,
+            &mut self.obp1,
+            &mut self.wy,
+            &mut self.wx,
+        ] {
+            *register = r.u8()?;
+        }
+        self.mode = match r.u8()? {
+            0 => Mode::HBlank,
+            1 => Mode::VBlank,
+            2 => Mode::OamScan,
+            3 => Mode::Drawing,
+            _ => return Err(StateError::Corrupt),
+        };
+        self.line_cycle = r.u8()?;
+        self.stat_line = r.bool()?;
+        self.drawing_penalty = r.u8()?;
+        self.vblank_started = r.bool()?;
+        self.window_triggered = r.bool()?;
+        self.window_line = r.u8()?;
+        self.interrupts = r.u8()?;
+        self.frame_ready = r.bool()?;
+        r.bytes(&mut self.framebuffer)?;
+        // Values a running PPU can never hold would make it index out of
+        // bounds later.
+        let valid = self.ly < LINES_PER_FRAME
+            && self.line_cycle < CYCLES_PER_LINE
+            && self.framebuffer.iter().all(|&shade| shade < 4);
+        if valid {
+            Ok(())
+        } else {
+            Err(StateError::Corrupt)
+        }
+    }
 }
 
 #[cfg(test)]

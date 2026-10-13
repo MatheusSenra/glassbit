@@ -19,6 +19,8 @@
 //! Reference: <https://gbdev.io/pandocs/Audio.html> and
 //! <https://gbdev.io/pandocs/Audio_details.html>
 
+use crate::state::{Reader, StateError, Writer};
+
 /// First and last sound register.
 pub const NR10: u16 = 0xFF10;
 pub const NR52: u16 = 0xFF26;
@@ -70,6 +72,8 @@ const DUTY_PATTERNS: [[u8; 8]; 4] = [
 ];
 
 const NOISE_DIVISORS: [i32; 8] = [8, 16, 32, 48, 64, 80, 96, 112];
+/// No channel timer ever holds more than the longest noise period.
+const MAX_TIMER: i32 = 112 << 13;
 
 /// Switches a channel off when it has played for long enough.
 #[derive(Debug, Clone, Copy, Default)]
@@ -685,6 +689,163 @@ impl Apu {
 impl Default for Apu {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Length {
+    fn save_state(&self, w: &mut Writer) {
+        w.bool(self.enabled);
+        w.u16(self.counter);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.enabled = r.bool()?;
+        self.counter = r.u16()?;
+        Ok(())
+    }
+}
+
+impl Envelope {
+    fn save_state(&self, w: &mut Writer) {
+        w.u8(self.register);
+        w.u8(self.volume);
+        w.u8(self.timer);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.register = r.u8()?;
+        self.volume = r.u8()? & 0x0F;
+        self.timer = r.u8()?;
+        Ok(())
+    }
+}
+
+impl Pulse {
+    fn save_state(&self, w: &mut Writer) {
+        w.bool(self.active);
+        w.u8(self.duty);
+        w.u8(self.duty_step);
+        w.u16(self.frequency);
+        w.i32(self.timer);
+        self.length.save_state(w);
+        self.envelope.save_state(w);
+        w.u8(self.sweep);
+        w.u8(self.sweep_timer);
+        w.bool(self.sweep_enabled);
+        w.u16(self.sweep_shadow);
+        w.bool(self.sweep_went_down);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.active = r.bool()?;
+        // Masked to the widths the hardware has, so that damaged data
+        // cannot index outside the duty table or underflow the timer.
+        self.duty = r.u8()? & 0x03;
+        self.duty_step = r.u8()? & 0x07;
+        self.frequency = r.u16()? & 0x07FF;
+        self.timer = r.i32()?.clamp(0, MAX_TIMER);
+        self.length.load_state(r)?;
+        self.envelope.load_state(r)?;
+        self.sweep = r.u8()?;
+        self.sweep_timer = r.u8()?;
+        self.sweep_enabled = r.bool()?;
+        self.sweep_shadow = r.u16()? & 0x07FF;
+        self.sweep_went_down = r.bool()?;
+        Ok(())
+    }
+}
+
+impl Wave {
+    fn save_state(&self, w: &mut Writer) {
+        w.bool(self.active);
+        w.bool(self.dac_on);
+        w.u8(self.volume);
+        w.u16(self.frequency);
+        w.i32(self.timer);
+        w.u8(self.position);
+        self.length.save_state(w);
+        w.bytes(&self.ram);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.active = r.bool()?;
+        self.dac_on = r.bool()?;
+        self.volume = r.u8()? & 0x03;
+        self.frequency = r.u16()? & 0x07FF;
+        self.timer = r.i32()?.clamp(0, MAX_TIMER);
+        self.position = r.u8()? & 31;
+        self.length.load_state(r)?;
+        r.bytes(&mut self.ram)
+    }
+}
+
+impl Noise {
+    fn save_state(&self, w: &mut Writer) {
+        w.bool(self.active);
+        w.u8(self.control);
+        w.i32(self.timer);
+        w.u16(self.lfsr);
+        self.length.save_state(w);
+        self.envelope.save_state(w);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.active = r.bool()?;
+        self.control = r.u8()?;
+        self.timer = r.i32()?.clamp(0, MAX_TIMER);
+        self.lfsr = r.u16()? & 0x7FFF;
+        self.length.load_state(r)?;
+        self.envelope.load_state(r)
+    }
+}
+
+impl Apu {
+    /// The sample rate and any samples not yet taken belong to the
+    /// frontend and are left out. The half-built sample is kept, so that
+    /// audio continues without a seam.
+    pub(crate) fn save_state(&self, w: &mut Writer) {
+        w.bool(self.powered);
+        w.bytes(&self.registers);
+        self.pulse1.save_state(w);
+        self.pulse2.save_state(w);
+        self.wave.save_state(w);
+        self.noise.save_state(w);
+        w.u16(self.sequencer_timer);
+        w.u8(self.sequencer_step);
+        w.f32(self.capacitor[0]);
+        w.f32(self.capacitor[1]);
+        w.u32(self.sample_phase);
+        w.f32(self.sum[0]);
+        w.f32(self.sum[1]);
+        w.u32(self.summed_cycles);
+    }
+
+    pub(crate) fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.powered = r.bool()?;
+        r.bytes(&mut self.registers)?;
+        self.pulse1.load_state(r)?;
+        self.pulse2.load_state(r)?;
+        self.wave.load_state(r)?;
+        self.noise.load_state(r)?;
+        self.sequencer_timer = r.u16()?;
+        self.sequencer_step = r.u8()? & 7;
+        self.capacitor = [r.f32()?, r.f32()?];
+        if self.sequencer_timer == 0 || self.sequencer_timer > CYCLES_PER_SEQUENCER_STEP {
+            return Err(StateError::Corrupt);
+        }
+        self.sample_phase = r.u32()?;
+        self.sum = [r.f32()?, r.f32()?];
+        self.summed_cycles = r.u32()?;
+        let finite = self
+            .capacitor
+            .iter()
+            .chain(&self.sum)
+            .all(|value| value.is_finite());
+        if !finite || self.sample_phase >= CYCLES_PER_SECOND {
+            return Err(StateError::Corrupt);
+        }
+        self.samples.clear();
+        Ok(())
     }
 }
 

@@ -27,6 +27,7 @@ use crate::joypad::{self, Button, Joypad};
 use crate::observer::{NullObserver, Observer};
 use crate::ppu::{self, Ppu};
 use crate::serial::{self, Serial};
+use crate::state::{Reader, StateError, Writer};
 use crate::timer::{self, Timer};
 
 /// OAM DMA: writing a page number here copies 160 bytes from that page into
@@ -128,6 +129,53 @@ impl<O: Observer> Bus<O> {
             cycles: self.cycles,
             observer,
         }
+    }
+
+    pub(crate) fn save_state(&self, w: &mut Writer) {
+        self.cartridge.save_state(w);
+        w.bytes(&self.wram);
+        w.bytes(&self.io);
+        w.bytes(&self.hram);
+        w.u8(self.interrupt_flag);
+        w.u8(self.interrupt_enable);
+        self.joypad.save_state(w);
+        self.serial.save_state(w);
+        self.timer.save_state(w);
+        self.ppu.save_state(w);
+        self.apu.save_state(w);
+        w.u8(self.dma_page);
+        w.u8(self.dma_delay);
+        w.bool(self.dma_active);
+        w.u8(self.dma_source);
+        w.u8(self.dma_index);
+        w.bool(self.dma_copying);
+        w.u64(self.cycles);
+    }
+
+    pub(crate) fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.cartridge.load_state(r)?;
+        r.bytes(&mut self.wram)?;
+        r.bytes(&mut self.io)?;
+        r.bytes(&mut self.hram)?;
+        self.interrupt_flag = r.u8()? & interrupts::MASK;
+        self.interrupt_enable = r.u8()?;
+        self.joypad.load_state(r)?;
+        self.serial.load_state(r)?;
+        self.timer.load_state(r)?;
+        self.ppu.load_state(r)?;
+        self.apu.load_state(r)?;
+        self.dma_page = r.u8()?;
+        self.dma_delay = r.u8()?;
+        self.dma_active = r.bool()?;
+        self.dma_source = r.u8()?;
+        self.dma_index = r.u8()?;
+        self.dma_copying = r.bool()?;
+        self.cycles = r.u64()?;
+        // A transfer in progress indexes OAM with this.
+        if self.dma_active && self.dma_index >= DMA_LENGTH {
+            return Err(StateError::Corrupt);
+        }
+        Ok(())
     }
 
     pub fn cartridge(&self) -> &Cartridge {

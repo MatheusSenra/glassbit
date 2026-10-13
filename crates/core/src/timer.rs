@@ -9,6 +9,8 @@
 //!
 //! Reference: <https://gbdev.io/pandocs/Timer_Obscure_Behaviour.html>
 
+use crate::state::{Reader, StateError, Writer};
+
 /// Divider: the upper byte of the internal counter. Writing resets it.
 pub const DIV: u16 = 0xFF04;
 /// Timer counter.
@@ -131,6 +133,27 @@ impl Timer {
 impl Default for Timer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Timer {
+    pub(crate) fn save_state(&self, w: &mut Writer) {
+        w.u16(self.counter);
+        w.u8(self.tima);
+        w.u8(self.tma);
+        w.u8(self.tac);
+        w.bool(self.overflowed);
+        w.bool(self.reloaded);
+    }
+
+    pub(crate) fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.counter = r.u16()?;
+        self.tima = r.u8()?;
+        self.tma = r.u8()?;
+        self.tac = r.u8()?;
+        self.overflowed = r.bool()?;
+        self.reloaded = r.bool()?;
+        Ok(())
     }
 }
 

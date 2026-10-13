@@ -15,6 +15,7 @@
 //! Reference: <https://gbdev.io/pandocs/MBC1.html>
 
 use super::Mbc;
+use crate::state::{Reader, StateError, Writer};
 
 const ROM_BANK_SIZE: usize = 0x4000;
 const RAM_BANK_SIZE: usize = 0x2000;
@@ -123,6 +124,22 @@ impl Mbc for Mbc1 {
 
     fn ram_mut(&mut self) -> &mut [u8] {
         &mut self.ram
+    }
+
+    fn save_state(&self, w: &mut Writer) {
+        w.bool(self.ram_enabled);
+        w.u8(self.bank1);
+        w.u8(self.bank2);
+        w.bool(self.advanced_mode);
+        w.bytes(&self.ram);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.ram_enabled = r.bool()?;
+        self.bank1 = (r.u8()? & 0x1F).max(1);
+        self.bank2 = r.u8()? & 0x03;
+        self.advanced_mode = r.bool()?;
+        r.bytes(&mut self.ram)
     }
 }
 

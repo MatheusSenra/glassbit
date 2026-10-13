@@ -16,6 +16,7 @@
 //! Reference: <https://gbdev.io/pandocs/MBC3.html>
 
 use super::Mbc;
+use crate::state::{Reader, StateError, Writer};
 
 const ROM_BANK_SIZE: usize = 0x4000;
 const RAM_BANK_SIZE: usize = 0x2000;
@@ -74,6 +75,15 @@ impl Mbc3 {
         }
     }
 
+    /// Applies a write to the RAM bank / clock select register.
+    fn select(&mut self, value: u8) {
+        self.selected = match value {
+            bank if bank <= self.last_ram_bank() => Selected::RamBank(bank),
+            0x08..=0x0C if self.has_clock => Selected::Clock(value as usize - 0x08),
+            _ => Selected::Nothing,
+        }
+    }
+
     fn ram_index(&self, bank: u8, addr: u16) -> Option<usize> {
         if self.ram.is_empty() {
             return None;
@@ -98,13 +108,7 @@ impl Mbc for Mbc3 {
         match addr {
             0x0000..=0x1FFF => self.enabled = value & 0x0F == 0x0A,
             0x2000..=0x3FFF => self.rom_bank = (value & self.rom_bank_mask()).max(1),
-            0x4000..=0x5FFF => {
-                self.selected = match value {
-                    bank if bank <= self.last_ram_bank() => Selected::RamBank(bank),
-                    0x08..=0x0C if self.has_clock => Selected::Clock(value as usize - 0x08),
-                    _ => Selected::Nothing,
-                }
-            }
+            0x4000..=0x5FFF => self.select(value),
             // Latching copies the running clock into the registers; with a
             // clock that does not tick there is nothing to copy.
             _ => {}
@@ -150,6 +154,28 @@ impl Mbc for Mbc3 {
 
     fn ram_mut(&mut self) -> &mut [u8] {
         &mut self.ram
+    }
+
+    fn save_state(&self, w: &mut Writer) {
+        w.bool(self.enabled);
+        w.u8(self.rom_bank);
+        // Stored as the register value that produces the selection.
+        w.u8(match self.selected {
+            Selected::RamBank(bank) => bank,
+            Selected::Clock(register) => 0x08 + register as u8,
+            Selected::Nothing => 0xFF,
+        });
+        w.bytes(&self.clock);
+        w.bytes(&self.ram);
+    }
+
+    fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.enabled = r.bool()?;
+        self.rom_bank = (r.u8()? & self.rom_bank_mask()).max(1);
+        let selection = r.u8()?;
+        self.select(selection);
+        r.bytes(&mut self.clock)?;
+        r.bytes(&mut self.ram)
     }
 }
 

@@ -14,6 +14,8 @@
 //!
 //! Reference: <https://gbdev.io/pandocs/Joypad_Input.html>
 
+use crate::state::{Reader, StateError, Writer};
+
 /// The joypad register.
 pub const P1: u16 = 0xFF00;
 
@@ -111,6 +113,19 @@ impl Joypad {
 impl Default for Joypad {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Joypad {
+    /// Only the selection is state. Which buttons are held belongs to the
+    /// player, not to the saved game.
+    pub(crate) fn save_state(&self, w: &mut Writer) {
+        w.u8(self.select);
+    }
+
+    pub(crate) fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
+        self.select = r.u8()? & (SELECT_DIRECTIONS | SELECT_ACTIONS);
+        Ok(())
     }
 }
 
