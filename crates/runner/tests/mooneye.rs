@@ -3,8 +3,8 @@
 //! the M-cycle.
 //!
 //! Only tests that already pass are listed, as a guard against regressions.
-//! Most of the rest wait for the PPU and OAM DMA (phase 4), or target other
-//! console models (DMG0, MGB, SGB) that Glassbit does not emulate.
+//! Of the rest, most target other console models (DMG0, MGB, SGB), and a
+//! few PPU ones need pixel-level timing that the line renderer does not have.
 
 use glassbit_runner::assert_rom_passes;
 
@@ -13,6 +13,245 @@ const MAX_FRAMES: u32 = 300;
 
 fn passes(name: &str) {
     assert_rom_passes(&format!("mooneye-test-suite/acceptance/{name}"), MAX_FRAMES);
+}
+
+mod general {
+    use super::passes;
+
+    #[test]
+    fn add_sp_e_timing() {
+        passes("add_sp_e_timing.gb");
+    }
+
+    #[test]
+    fn boot_div_dmgabcmgb() {
+        passes("boot_div-dmgABCmgb.gb");
+    }
+
+    #[test]
+    fn boot_hwio_dmgabcmgb() {
+        passes("boot_hwio-dmgABCmgb.gb");
+    }
+
+    #[test]
+    fn boot_regs_dmgabc() {
+        passes("boot_regs-dmgABC.gb");
+    }
+
+    #[test]
+    fn call_cc_timing() {
+        passes("call_cc_timing.gb");
+    }
+
+    #[test]
+    fn call_cc_timing2() {
+        passes("call_cc_timing2.gb");
+    }
+
+    #[test]
+    fn call_timing() {
+        passes("call_timing.gb");
+    }
+
+    #[test]
+    fn call_timing2() {
+        passes("call_timing2.gb");
+    }
+
+    #[test]
+    fn div_timing() {
+        passes("div_timing.gb");
+    }
+
+    #[test]
+    fn ei_sequence() {
+        passes("ei_sequence.gb");
+    }
+
+    #[test]
+    fn ei_timing() {
+        passes("ei_timing.gb");
+    }
+
+    #[test]
+    fn halt_ime0_ei() {
+        passes("halt_ime0_ei.gb");
+    }
+
+    #[test]
+    fn halt_ime0_nointr_timing() {
+        passes("halt_ime0_nointr_timing.gb");
+    }
+
+    #[test]
+    fn halt_ime1_timing() {
+        passes("halt_ime1_timing.gb");
+    }
+
+    #[test]
+    fn if_ie_registers() {
+        passes("if_ie_registers.gb");
+    }
+
+    #[test]
+    fn intr_timing() {
+        passes("intr_timing.gb");
+    }
+
+    #[test]
+    fn jp_cc_timing() {
+        passes("jp_cc_timing.gb");
+    }
+
+    #[test]
+    fn jp_timing() {
+        passes("jp_timing.gb");
+    }
+
+    #[test]
+    fn ld_hl_sp_e_timing() {
+        passes("ld_hl_sp_e_timing.gb");
+    }
+
+    #[test]
+    fn oam_dma_restart() {
+        passes("oam_dma_restart.gb");
+    }
+
+    #[test]
+    fn oam_dma_start() {
+        passes("oam_dma_start.gb");
+    }
+
+    #[test]
+    fn oam_dma_timing() {
+        passes("oam_dma_timing.gb");
+    }
+
+    #[test]
+    fn pop_timing() {
+        passes("pop_timing.gb");
+    }
+
+    #[test]
+    fn push_timing() {
+        passes("push_timing.gb");
+    }
+
+    #[test]
+    fn rapid_di_ei() {
+        passes("rapid_di_ei.gb");
+    }
+
+    #[test]
+    fn ret_cc_timing() {
+        passes("ret_cc_timing.gb");
+    }
+
+    #[test]
+    fn ret_timing() {
+        passes("ret_timing.gb");
+    }
+
+    #[test]
+    fn reti_intr_timing() {
+        passes("reti_intr_timing.gb");
+    }
+
+    #[test]
+    fn reti_timing() {
+        passes("reti_timing.gb");
+    }
+
+    #[test]
+    fn rst_timing() {
+        passes("rst_timing.gb");
+    }
+}
+
+mod bits {
+    use super::passes;
+
+    #[test]
+    fn mem_oam() {
+        passes("bits/mem_oam.gb");
+    }
+
+    #[test]
+    fn reg_f() {
+        passes("bits/reg_f.gb");
+    }
+}
+
+mod instr {
+    use super::passes;
+
+    #[test]
+    fn daa() {
+        passes("instr/daa.gb");
+    }
+}
+
+mod interrupts {
+    use super::passes;
+
+    #[test]
+    fn ie_push() {
+        passes("interrupts/ie_push.gb");
+    }
+}
+
+mod oam_dma {
+    use super::passes;
+
+    #[test]
+    fn basic() {
+        passes("oam_dma/basic.gb");
+    }
+
+    #[test]
+    fn reg_read() {
+        passes("oam_dma/reg_read.gb");
+    }
+}
+
+mod ppu {
+    use super::passes;
+
+    #[test]
+    fn intr_1_2_timing_gs() {
+        passes("ppu/intr_1_2_timing-GS.gb");
+    }
+
+    #[test]
+    fn intr_2_0_timing() {
+        passes("ppu/intr_2_0_timing.gb");
+    }
+
+    #[test]
+    fn intr_2_mode0_timing() {
+        passes("ppu/intr_2_mode0_timing.gb");
+    }
+
+    #[test]
+    fn intr_2_mode3_timing() {
+        passes("ppu/intr_2_mode3_timing.gb");
+    }
+
+    #[test]
+    fn intr_2_oam_ok_timing() {
+        passes("ppu/intr_2_oam_ok_timing.gb");
+    }
+
+    #[test]
+    fn stat_irq_blocking() {
+        passes("ppu/stat_irq_blocking.gb");
+    }
+
+    #[test]
+    fn vblank_stat_intr_gs() {
+        passes("ppu/vblank_stat_intr-GS.gb");
+    }
 }
 
 mod timer {
@@ -81,92 +320,5 @@ mod timer {
     #[test]
     fn tma_write_reloading() {
         passes("timer/tma_write_reloading.gb");
-    }
-}
-
-mod interrupts {
-    use super::passes;
-
-    #[test]
-    fn ei_sequence() {
-        passes("ei_sequence.gb");
-    }
-
-    #[test]
-    fn ei_timing() {
-        passes("ei_timing.gb");
-    }
-
-    #[test]
-    fn halt_ime1_timing() {
-        passes("halt_ime1_timing.gb");
-    }
-
-    #[test]
-    fn if_ie_registers() {
-        passes("if_ie_registers.gb");
-    }
-
-    #[test]
-    fn intr_timing() {
-        passes("intr_timing.gb");
-    }
-
-    #[test]
-    fn rapid_di_ei() {
-        passes("rapid_di_ei.gb");
-    }
-
-    #[test]
-    fn reti_intr_timing() {
-        passes("reti_intr_timing.gb");
-    }
-
-    #[test]
-    fn ie_push() {
-        passes("interrupts/ie_push.gb");
-    }
-}
-
-mod cpu {
-    use super::passes;
-
-    #[test]
-    fn pop_timing() {
-        passes("pop_timing.gb");
-    }
-
-    #[test]
-    fn reg_f() {
-        passes("bits/reg_f.gb");
-    }
-
-    #[test]
-    fn daa() {
-        passes("instr/daa.gb");
-    }
-
-    #[test]
-    fn mem_oam() {
-        passes("bits/mem_oam.gb");
-    }
-}
-
-mod boot {
-    use super::passes;
-
-    #[test]
-    fn boot_div_dmgabcmgb() {
-        passes("boot_div-dmgABCmgb.gb");
-    }
-
-    #[test]
-    fn boot_regs_dmgabc() {
-        passes("boot_regs-dmgABC.gb");
-    }
-
-    #[test]
-    fn div_timing() {
-        passes("div_timing.gb");
     }
 }

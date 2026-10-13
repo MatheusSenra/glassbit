@@ -7,6 +7,12 @@
 //! - **Mooneye**: the ROM executes `LD B,B` as a breakpoint, with the
 //!   Fibonacci numbers 3, 5, 8, 13, 21, 34 in B, C, D, E, H, L on success and
 //!   `0x42` in all of them on failure.
+//!
+//! Visual tests such as dmg-acid2 have no verdict of their own: they draw a
+//! picture and signal that it is ready with the same `LD B,B` breakpoint. For
+//! those, [`run_screen_test`] returns the screen to compare with a reference.
+
+pub mod screenshot;
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +36,8 @@ pub struct TestRun {
     /// Everything the ROM printed over the serial port.
     pub output: String,
     pub frames: u32,
+    /// The screen at the end of the run, one shade per pixel.
+    pub framebuffer: Vec<u8>,
 }
 
 /// Frames to keep running after a serial verdict shows up, so the rest of
@@ -78,11 +86,34 @@ pub fn run_test(rom: &[u8], max_frames: u32) -> Result<TestRun, CartridgeError> 
     }
 
     output.extend(gb.take_serial_output().iter().map(|&b| b as char));
+    let frames = gb.cycles().div_ceil(CYCLES_PER_FRAME) as u32;
+    // Let the frame in progress finish so the screen is complete.
+    gb.run_frame();
     Ok(TestRun {
         outcome,
         output,
-        frames: gb.cycles().div_ceil(CYCLES_PER_FRAME) as u32,
+        frames,
+        framebuffer: gb.framebuffer().to_vec(),
     })
+}
+
+/// Runs a visual test ROM until it executes `LD B,B` (or `max_frames` go by)
+/// and returns the finished screen, one shade per pixel.
+pub fn run_screen_test(rom: &[u8], max_frames: u32) -> Result<Vec<u8>, CartridgeError> {
+    let mut gb = GameBoy::new(rom)?;
+    let deadline = max_frames as u64 * CYCLES_PER_FRAME;
+    while gb.cycles() < deadline {
+        let breakpoint = !gb.cpu().halted && gb.peek(gb.cpu().regs.pc) == LD_B_B;
+        gb.step();
+        if breakpoint {
+            break;
+        }
+    }
+    // The picture is ready in video memory; give the PPU a full frame to
+    // draw it, after finishing the one in progress.
+    gb.run_frame();
+    gb.run_frame();
+    Ok(gb.framebuffer().to_vec())
 }
 
 fn mooneye_verdict(regs: &Registers) -> Option<Outcome> {
@@ -129,6 +160,29 @@ pub fn assert_rom_passes(relative: &str, max_frames: u32) {
         run.frames,
         run.output
     );
+}
+
+/// Runs the visual test ROM at `rom` and panics unless the screen matches
+/// the PNG at `reference` exactly (both paths inside the test ROM directory).
+/// Does nothing when the ROMs have not been downloaded.
+pub fn assert_screen_matches(rom: &str, reference: &str, max_frames: u32) {
+    let Some(dir) = test_roms_dir() else { return };
+    let path = dir.join(rom);
+    let image = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let actual = run_screen_test(&image, max_frames).unwrap_or_else(|e| panic!("{rom}: {e}"));
+    let expected =
+        screenshot::load(&dir.join(reference)).unwrap_or_else(|e| panic!("{reference}: {e}"));
+
+    let (differing, first) = screenshot::compare(&actual, &expected);
+    if let Some((x, y)) = first {
+        // Keep the evidence where it is easy to find.
+        let out = std::env::temp_dir().join("glassbit-failed-screen.png");
+        let saved = match screenshot::save(&actual, &out) {
+            Ok(()) => format!("screen saved to {}", out.display()),
+            Err(e) => format!("could not save the screen: {e}"),
+        };
+        panic!("{rom}: {differing} pixels differ from {reference}, first at ({x}, {y}); {saved}");
+    }
 }
 
 #[cfg(test)]
