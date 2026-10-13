@@ -2,12 +2,16 @@
 
 mod header;
 mod mbc1;
+mod mbc3;
+mod mbc5;
 mod rom_only;
 
 use std::fmt;
 
 pub use header::{CartridgeType, CgbSupport, Header, MapperKind};
 use mbc1::Mbc1;
+use mbc3::Mbc3;
+use mbc5::Mbc5;
 use rom_only::RomOnly;
 
 /// A memory bank controller: the chip that decides what the CPU sees in the
@@ -24,6 +28,12 @@ pub trait Mbc {
     fn read_ram(&self, addr: u16) -> u8;
     /// Writes to `0xA000..=0xBFFF`.
     fn write_ram(&mut self, addr: u16, value: u8);
+    /// The bank number selected for `0x4000..=0x7FFF`, as the program set it.
+    fn rom_bank(&self) -> u16;
+    /// The whole RAM chip, all banks; empty when there is none. This is
+    /// what a battery keeps alive.
+    fn ram(&self) -> &[u8];
+    fn ram_mut(&mut self) -> &mut [u8];
 }
 
 /// Why a ROM image could not be turned into a cartridge.
@@ -66,6 +76,8 @@ impl std::error::Error for CartridgeError {}
 pub struct Cartridge {
     header: Header,
     mbc: Box<dyn Mbc>,
+    /// RAM was written since the frontend last asked.
+    ram_dirty: bool,
 }
 
 impl Cartridge {
@@ -84,11 +96,15 @@ impl Cartridge {
         } else {
             0
         };
-        let mbc: Box<dyn Mbc> = match header.cartridge_type.mapper {
-            MapperKind::RomOnly => Box::new(RomOnly::new(rom.to_vec(), ram_size)),
+        let kind = header.cartridge_type;
+        let image = rom[..header.rom_size].to_vec();
+        let mbc: Box<dyn Mbc> = match kind.mapper {
+            MapperKind::RomOnly => Box::new(RomOnly::new(image, ram_size)),
             MapperKind::Mbc1 if header.rom_size <= mbc1::MAX_ROM_SIZE => {
-                Box::new(Mbc1::new(rom[..header.rom_size].to_vec(), ram_size))
+                Box::new(Mbc1::new(image, ram_size))
             }
+            MapperKind::Mbc3 => Box::new(Mbc3::new(image, ram_size, kind.timer)),
+            MapperKind::Mbc5 => Box::new(Mbc5::new(image, ram_size, kind.rumble)),
             _ => {
                 return Err(CartridgeError::UnsupportedMapper(
                     header.cartridge_type.code,
@@ -96,7 +112,11 @@ impl Cartridge {
             }
         };
 
-        Ok(Self { header, mbc })
+        Ok(Self {
+            header,
+            mbc,
+            ram_dirty: false,
+        })
     }
 
     pub fn header(&self) -> &Header {
@@ -121,6 +141,42 @@ impl Cartridge {
     /// Writes to `0xA000..=0xBFFF`.
     pub fn write_ram(&mut self, addr: u16, value: u8) {
         self.mbc.write_ram(addr, value);
+        self.ram_dirty = true;
+    }
+
+    /// The bank number selected for `0x4000..=0x7FFF`.
+    pub fn rom_bank(&self) -> u16 {
+        self.mbc.rom_bank()
+    }
+
+    /// Whether the cartridge keeps its RAM when powered off, i.e. whether
+    /// there is anything worth saving.
+    pub fn has_battery(&self) -> bool {
+        self.header.cartridge_type.battery && !self.mbc.ram().is_empty()
+    }
+
+    /// The battery-backed RAM, to be stored by the frontend. `None` when
+    /// the cartridge has no battery.
+    pub fn save_data(&self) -> Option<&[u8]> {
+        self.has_battery().then(|| self.mbc.ram())
+    }
+
+    /// Restores battery-backed RAM from a previous [`Cartridge::save_data`].
+    /// Data of the wrong size is accepted: what fits is copied. Returns
+    /// `false` when the cartridge has no battery.
+    pub fn load_save(&mut self, data: &[u8]) -> bool {
+        if !self.has_battery() {
+            return false;
+        }
+        let ram = self.mbc.ram_mut();
+        let len = ram.len().min(data.len());
+        ram[..len].copy_from_slice(&data[..len]);
+        true
+    }
+
+    /// Returns `true` if battery-backed RAM was written since the last call.
+    pub fn take_save_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.ram_dirty) && self.has_battery()
     }
 }
 
@@ -236,12 +292,83 @@ mod tests {
     }
 
     #[test]
+    fn builds_mbc3_and_mbc5_cartridges() {
+        for code in [0x13, 0x1B] {
+            let rom = RomBuilder::new()
+                .cartridge_type(code)
+                .rom_size_code(2)
+                .ram_size_code(3)
+                .build();
+            let mut cart = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+            cart.write_rom(0x0000, 0x0A);
+            cart.write_rom(0x4000, 0x03);
+            cart.write_ram(0xA000, 0x77);
+            assert_eq!(cart.read_ram(0xA000), 0x77, "type {code:#04x}");
+            cart.write_rom(0x2000, 0x05);
+            assert_eq!(cart.rom_bank(), 5, "type {code:#04x}");
+        }
+    }
+
+    #[test]
     fn rejects_unimplemented_mappers() {
-        let rom = RomBuilder::new().cartridge_type(0x19).build();
+        // MBC2.
+        let rom = RomBuilder::new().cartridge_type(0x05).build();
         assert_eq!(
             Cartridge::new(&rom).err(),
-            Some(CartridgeError::UnsupportedMapper(0x19))
+            Some(CartridgeError::UnsupportedMapper(0x05))
         );
+    }
+
+    #[test]
+    fn battery_ram_can_be_saved_and_restored() {
+        let rom = RomBuilder::new()
+            .cartridge_type(0x03)
+            .ram_size_code(2)
+            .build();
+        let mut cart = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        assert!(cart.has_battery());
+        assert!(!cart.take_save_dirty());
+
+        cart.write_rom(0x0000, 0x0A);
+        cart.write_ram(0xA123, 0x99);
+        assert!(cart.take_save_dirty());
+        assert!(!cart.take_save_dirty(), "the flag is cleared by asking");
+        let saved = cart.save_data().expect("has a battery").to_vec();
+        assert_eq!(saved.len(), 0x2000);
+        assert_eq!(saved[0x123], 0x99);
+
+        let mut fresh = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        assert!(fresh.load_save(&saved));
+        fresh.write_rom(0x0000, 0x0A);
+        assert_eq!(fresh.read_ram(0xA123), 0x99);
+    }
+
+    #[test]
+    fn saves_of_the_wrong_size_are_copied_as_far_as_they_fit() {
+        let rom = RomBuilder::new()
+            .cartridge_type(0x03)
+            .ram_size_code(2)
+            .build();
+        let mut cart = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        assert!(cart.load_save(&[0xAB; 16]));
+        assert!(cart.load_save(&vec![0xCD; 0x4000]));
+        assert_eq!(cart.save_data().map(<[u8]>::len), Some(0x2000));
+    }
+
+    #[test]
+    fn cartridges_without_a_battery_have_nothing_to_save() {
+        // MBC1 + RAM, no battery.
+        let rom = RomBuilder::new()
+            .cartridge_type(0x02)
+            .ram_size_code(2)
+            .build();
+        let mut cart = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        cart.write_rom(0x0000, 0x0A);
+        cart.write_ram(0xA000, 0x01);
+        assert!(!cart.has_battery());
+        assert!(cart.save_data().is_none());
+        assert!(!cart.take_save_dirty());
+        assert!(!cart.load_save(&[0; 0x2000]));
     }
 
     #[test]

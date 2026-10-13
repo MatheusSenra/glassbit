@@ -20,6 +20,9 @@ pub trait Observer {
     /// The PPU entered a new mode while on line `ly`.
     fn ppu_mode(&mut self, _mode: Mode, _ly: u8) {}
 
+    /// The cartridge mapper now shows ROM bank `bank` at `0x4000..=0x7FFF`.
+    fn rom_bank_switch(&mut self, _bank: u16) {}
+
     /// A write landed on an I/O register (`0xFF00..=0xFF7F`) or on IE (`0xFFFF`).
     fn io_write(&mut self, _addr: u16, _old: u8, _new: u8) {}
 }

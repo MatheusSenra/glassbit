@@ -138,6 +138,10 @@ impl<O: Observer> Bus<O> {
         &self.cartridge
     }
 
+    pub fn cartridge_mut(&mut self) -> &mut Cartridge {
+        &mut self.cartridge
+    }
+
     /// Updates whether `button` is held, requesting the joypad interrupt
     /// when the program is listening for it.
     pub fn set_button(&mut self, button: Button, pressed: bool) {
@@ -253,7 +257,13 @@ impl<O: Observer> Bus<O> {
     /// Writes `value` to `addr` as the CPU would, without advancing time.
     pub fn poke(&mut self, addr: u16, value: u8) {
         match addr {
-            0x0000..=0x7FFF => self.cartridge.write_rom(addr, value),
+            0x0000..=0x7FFF => {
+                let bank = self.cartridge.rom_bank();
+                self.cartridge.write_rom(addr, value);
+                if self.cartridge.rom_bank() != bank {
+                    self.observer.rom_bank_switch(self.cartridge.rom_bank());
+                }
+            }
             0x8000..=0x9FFF => self.ppu.write_vram(addr, value),
             0xA000..=0xBFFF => self.cartridge.write_ram(addr, value),
             0xC000..=0xDFFF => self.wram[(addr - 0xC000) as usize] = value,

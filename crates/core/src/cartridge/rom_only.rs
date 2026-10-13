@@ -49,6 +49,18 @@ impl Mbc for RomOnly {
             self.ram[index] = value;
         }
     }
+
+    fn rom_bank(&self) -> u16 {
+        1
+    }
+
+    fn ram(&self) -> &[u8] {
+        &self.ram
+    }
+
+    fn ram_mut(&mut self) -> &mut [u8] {
+        &mut self.ram
+    }
 }
 
 #[cfg(test)]

@@ -128,6 +128,29 @@ impl<O: Observer> GameBoy<O> {
         &self.audio
     }
 
+    /// Whether the cartridge has battery-backed RAM, i.e. can save.
+    pub fn has_battery(&self) -> bool {
+        self.bus.cartridge().has_battery()
+    }
+
+    /// The cartridge's battery-backed RAM, for the frontend to store.
+    pub fn save_data(&self) -> Option<&[u8]> {
+        self.bus.cartridge().save_data()
+    }
+
+    /// Restores battery-backed RAM stored earlier. Call it right after
+    /// creating the console, before running any frame. Returns `false` when
+    /// the cartridge has no battery.
+    pub fn load_save(&mut self, data: &[u8]) -> bool {
+        self.bus.cartridge_mut().load_save(data)
+    }
+
+    /// Returns `true` if the save data changed since the last call, so the
+    /// frontend knows when to store it again.
+    pub fn take_save_dirty(&mut self) -> bool {
+        self.bus.cartridge_mut().take_save_dirty()
+    }
+
     /// Updates whether `button` is currently held.
     pub fn set_button(&mut self, button: Button, pressed: bool) {
         self.bus.set_button(button, pressed);
@@ -305,6 +328,53 @@ mod tests {
         fn interrupt(&mut self, bit: u8) {
             self.bits.push(bit);
         }
+    }
+
+    #[derive(Default)]
+    struct Banks {
+        seen: Vec<u16>,
+    }
+
+    impl Observer for Banks {
+        fn rom_bank_switch(&mut self, bank: u16) {
+            self.seen.push(bank);
+        }
+    }
+
+    #[test]
+    fn a_game_can_save_and_the_observer_sees_bank_switches() {
+        // Enable RAM, write 0x5A to 0xA000, select ROM bank 2 (twice).
+        let mut rom = RomBuilder::new()
+            .cartridge_type(0x13)
+            .rom_size_code(1)
+            .ram_size_code(2)
+            .build();
+        rom[0x100..0x104].copy_from_slice(&[0x00, 0xC3, 0x50, 0x01]);
+        let program = [
+            0x3E, 0x0A, 0xEA, 0x00, 0x00, // LD A,0x0A ; LD (0x0000),A
+            0x3E, 0x5A, 0xEA, 0x00, 0xA0, // LD A,0x5A ; LD (0xA000),A
+            0x3E, 0x02, 0xEA, 0x00, 0x20, // LD A,2 ; LD (0x2000),A
+            0xEA, 0x00, 0x20, // LD (0x2000),A
+            0x18, 0xFE, // JR -2
+        ];
+        rom[0x150..0x150 + program.len()].copy_from_slice(&program);
+
+        let mut gb =
+            GameBoy::with_observer(&rom, Banks::default()).unwrap_or_else(|e| panic!("{e}"));
+        assert!(gb.has_battery());
+        gb.run_frame();
+        assert!(gb.take_save_dirty());
+        assert_eq!(gb.save_data().map(|ram| ram[0]), Some(0x5A));
+        assert_eq!(
+            gb.observer().seen,
+            vec![2],
+            "only actual changes are reported"
+        );
+
+        let mut restored = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        let saved = gb.save_data().unwrap().to_vec();
+        assert!(restored.load_save(&saved));
+        assert_eq!(restored.save_data().map(|ram| ram[0]), Some(0x5A));
     }
 
     #[test]

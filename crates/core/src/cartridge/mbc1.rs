@@ -112,6 +112,18 @@ impl Mbc for Mbc1 {
             self.ram[index] = value;
         }
     }
+
+    fn rom_bank(&self) -> u16 {
+        (self.bank2 as u16) << 5 | self.bank1 as u16
+    }
+
+    fn ram(&self) -> &[u8] {
+        &self.ram
+    }
+
+    fn ram_mut(&mut self) -> &mut [u8] {
+        &mut self.ram
+    }
 }
 
 #[cfg(test)]
