@@ -15,13 +15,11 @@
 //!
 //! Reference: <https://gbdev.io/pandocs/Memory_Map.html>
 //!
-//! The sound registers are still plain storage holding their post-boot
-//! values; they gain real behavior when the APU is implemented.
-//!
 //! [`Bus::peek`] and [`Bus::poke`] access memory without the passage of time.
 //! The CPU goes through the [`CpuBus`] implementation instead, where every
 //! access first advances the hardware by one M-cycle.
 
+use crate::apu::{self, Apu};
 use crate::cartridge::Cartridge;
 use crate::cpu::CpuBus;
 use crate::interrupts;
@@ -38,36 +36,6 @@ const DMA_LENGTH: u8 = 160;
 /// M-cycles between the write to DMA and the first byte being copied.
 const DMA_START_DELAY: u8 = 2;
 
-/// I/O register values right after the DMG boot ROM hands control to the
-/// cartridge. Registers not listed here either belong to a component with
-/// its own state (joypad, serial, timer, interrupts, PPU) or are unmapped and read
-/// `0xFF`.
-///
-/// Reference: <https://gbdev.io/pandocs/Power_Up_Sequence.html#hardware-registers>
-const POST_BOOT_IO: &[(u16, u8)] = &[
-    (0xFF10, 0x80), // NR10
-    (0xFF11, 0xBF), // NR11
-    (0xFF12, 0xF3), // NR12
-    (0xFF13, 0xFF), // NR13
-    (0xFF14, 0xBF), // NR14
-    (0xFF16, 0x3F), // NR21
-    (0xFF17, 0x00), // NR22
-    (0xFF18, 0xFF), // NR23
-    (0xFF19, 0xBF), // NR24
-    (0xFF1A, 0x7F), // NR30
-    (0xFF1B, 0xFF), // NR31
-    (0xFF1C, 0x9F), // NR32
-    (0xFF1D, 0xFF), // NR33
-    (0xFF1E, 0xBF), // NR34
-    (0xFF20, 0xFF), // NR41
-    (0xFF21, 0x00), // NR42
-    (0xFF22, 0x00), // NR43
-    (0xFF23, 0xBF), // NR44
-    (0xFF24, 0x77), // NR50
-    (0xFF25, 0xF3), // NR51
-    (0xFF26, 0xF1), // NR52
-];
-
 const WRAM_SIZE: usize = 0x2000;
 const IO_SIZE: usize = 0x80;
 const HRAM_SIZE: usize = 0x7F;
@@ -76,6 +44,8 @@ const HRAM_SIZE: usize = 0x7F;
 pub struct Bus<O: Observer = NullObserver> {
     cartridge: Cartridge,
     wram: [u8; WRAM_SIZE],
+    /// I/O addresses that no component claims. They read `0xFF` until
+    /// something is written, which only matters to badly behaved programs.
     io: [u8; IO_SIZE],
     hram: [u8; HRAM_SIZE],
     /// IF: one bit per interrupt source that is asking for service.
@@ -86,6 +56,7 @@ pub struct Bus<O: Observer = NullObserver> {
     serial: Serial,
     timer: Timer,
     ppu: Ppu,
+    apu: Apu,
     /// The last value written to the DMA register.
     dma_page: u8,
     /// M-cycles until a requested DMA transfer starts; 0 when none is waiting.
@@ -107,14 +78,10 @@ pub struct Bus<O: Observer = NullObserver> {
 impl<O: Observer> Bus<O> {
     /// Creates a bus in the post-boot state with `cartridge` inserted.
     pub fn new(cartridge: Cartridge, observer: O) -> Self {
-        let mut io = [0xFF; IO_SIZE];
-        for &(addr, value) in POST_BOOT_IO {
-            io[(addr - 0xFF00) as usize] = value;
-        }
         Self {
             cartridge,
             wram: [0; WRAM_SIZE],
-            io,
+            io: [0xFF; IO_SIZE],
             hram: [0; HRAM_SIZE],
             // The boot ROM leaves a VBlank request behind.
             interrupt_flag: interrupts::VBLANK,
@@ -123,6 +90,7 @@ impl<O: Observer> Bus<O> {
             serial: Serial::new(),
             timer: Timer::new(),
             ppu: Ppu::new(),
+            apu: Apu::new(),
             dma_page: 0xFF,
             dma_delay: 0,
             dma_active: false,
@@ -152,6 +120,14 @@ impl<O: Observer> Bus<O> {
 
     pub fn is_pressed(&self, button: Button) -> bool {
         self.joypad.is_pressed(button)
+    }
+
+    pub fn apu(&self) -> &Apu {
+        &self.apu
+    }
+
+    pub fn apu_mut(&mut self) -> &mut Apu {
+        &mut self.apu
     }
 
     pub fn ppu(&self) -> &Ppu {
@@ -191,6 +167,7 @@ impl<O: Observer> Bus<O> {
         }
         self.interrupt_flag |= self.ppu.take_interrupts();
 
+        self.apu.tick();
         self.tick_dma();
     }
 
@@ -246,6 +223,7 @@ impl<O: Observer> Bus<O> {
             timer::DIV..=timer::TAC => self.timer.read(addr),
             // The upper three bits do not exist and read as 1.
             interrupts::IF => self.interrupt_flag | !interrupts::MASK,
+            apu::NR10..=apu::WAVE_RAM_END => self.apu.read(addr),
             DMA => self.dma_page,
             ppu::LCDC..=ppu::WX => self.ppu.read_register(addr),
             0xFF01..=0xFF7F => self.io[(addr - 0xFF00) as usize],
@@ -281,6 +259,7 @@ impl<O: Observer> Bus<O> {
                     serial::SB | serial::SC => self.serial.write(addr, value),
                     timer::DIV..=timer::TAC => self.timer.write(addr, value),
                     interrupts::IF => self.interrupt_flag = value & interrupts::MASK,
+                    apu::NR10..=apu::WAVE_RAM_END => self.apu.write(addr, value),
                     DMA => {
                         self.dma_page = value;
                         self.dma_delay = DMA_START_DELAY;
@@ -435,6 +414,7 @@ mod tests {
         assert_eq!(bus.peek(0xFF00), 0xCF); // P1
         assert_eq!(bus.peek(0xFF07), 0xF8); // TAC
         assert_eq!(bus.peek(0xFF0F), 0xE1); // IF
+        assert_eq!(bus.peek(0xFF26), 0xF1); // NR52
         assert_eq!(bus.peek(0xFF40), 0x91); // LCDC
         assert_eq!(bus.peek(0xFF47), 0xFC); // BGP
         assert_eq!(bus.peek(0xFFFF), 0x00); // IE
@@ -514,6 +494,19 @@ mod tests {
         assert_eq!(bus.peek(0xFF00), 0xC0 | 0x10 | 0b0111);
         assert_eq!(bus.peek(0xFF0F) & 0x10, 0x10);
         assert!(bus.is_pressed(Button::Start));
+    }
+
+    #[test]
+    fn sound_registers_and_wave_ram_reach_the_apu() {
+        let mut bus = bus();
+        bus.poke(0xFF24, 0x35);
+        assert_eq!(bus.apu().read(0xFF24), 0x35);
+        bus.poke(0xFF30, 0xAB);
+        assert_eq!(bus.peek(0xFF30), 0xAB);
+        for _ in 0..1000 {
+            bus.idle();
+        }
+        assert!(!bus.apu_mut().take_samples().is_empty());
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! frontend loads a ROM, feeds button state in, runs one frame at a time and
 //! reads the framebuffer and audio samples back out.
 
+pub mod apu;
 pub mod bus;
 pub mod cartridge;
 pub mod cpu;
@@ -106,6 +107,8 @@ impl<O: Observer> GameBoy<O> {
     /// While the LCD is switched off no frame ever finishes, so this also
     /// returns after one frame's worth of time.
     pub fn run_frame(&mut self) {
+        // Anything produced by stepping outside of run_frame is dropped.
+        self.bus.apu_mut().take_samples();
         self.audio.clear();
         let limit = self.bus.cycles() + CYCLES_PER_FRAME;
         while self.bus.cycles() < limit {
@@ -114,6 +117,7 @@ impl<O: Observer> GameBoy<O> {
                 break;
             }
         }
+        self.audio.extend(self.bus.apu_mut().take_samples());
     }
 
     /// The screen: `SCREEN_WIDTH * SCREEN_HEIGHT` shades, row by row, where
@@ -123,9 +127,16 @@ impl<O: Observer> GameBoy<O> {
         self.bus.ppu().framebuffer()
     }
 
-    /// Audio samples produced by the last call to [`GameBoy::run_frame`].
+    /// Audio produced by the last call to [`GameBoy::run_frame`]:
+    /// interleaved stereo samples (left, right) between -1.0 and 1.0, at the
+    /// rate set with [`GameBoy::set_sample_rate`].
     pub fn audio_samples(&self) -> &[f32] {
         &self.audio
+    }
+
+    /// Sets the audio sample rate in Hz. The default is 48000.
+    pub fn set_sample_rate(&mut self, hz: u32) {
+        self.bus.apu_mut().set_sample_rate(hz);
     }
 
     /// Whether the cartridge has battery-backed RAM, i.e. can save.
@@ -375,6 +386,25 @@ mod tests {
         let saved = gb.save_data().unwrap().to_vec();
         assert!(restored.load_save(&saved));
         assert_eq!(restored.save_data().map(|ram| ram[0]), Some(0x5A));
+    }
+
+    #[test]
+    fn each_frame_comes_with_its_share_of_audio() {
+        let rom = rom_running(&[]);
+        let mut gb = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        gb.set_sample_rate(48_000);
+        gb.run_frame();
+        let mut values = 0;
+        for _ in 0..60 {
+            gb.run_frame();
+            values += gb.audio_samples().len();
+        }
+        // 60 frames last 60 * 17556 / 1048576 s; two values per sample.
+        let expected = 2.0 * 48_000.0 * 60.0 * CYCLES_PER_FRAME as f64 / 1_048_576.0;
+        assert!(
+            (values as f64 - expected).abs() < 4.0,
+            "{values} vs {expected}"
+        );
     }
 
     #[test]

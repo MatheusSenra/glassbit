@@ -1,8 +1,8 @@
 //! A tiny built-in cartridge, so a frontend has something to show before the
 //! user loads a ROM, and so input can be tested end to end.
 //!
-//! It draws one sprite on a checkerboard and moves it with the direction
-//! pad; holding A inverts the colors. The program is assembled below, by
+//! It plays a short chime, draws one sprite on a checkerboard and moves it
+//! with the direction pad; holding A inverts the colors. The program is assembled below, by
 //! hand, one instruction per line.
 
 /// Where the sprite starts (in OAM coordinates, which are offset by 8 and 16).
@@ -155,6 +155,22 @@ pub fn rom() -> Vec<u8> {
     p.emit(&[0x3E, 0x93]); //           LD A,0x93
     p.emit(&[0xE0, 0x40]); //           LDH (LCDC),A      ; LCD, BG and sprites on
 
+    // A chime on channel 2: a 1048 Hz square wave that fades out.
+    p.emit(&[0x3E, 0x80]); //           LD A,0x80
+    p.emit(&[0xE0, 0x26]); //           LDH (NR52),A      ; sound on
+    p.emit(&[0x3E, 0x77]); //           LD A,0x77
+    p.emit(&[0xE0, 0x24]); //           LDH (NR50),A      ; full volume
+    p.emit(&[0x3E, 0x22]); //           LD A,0x22
+    p.emit(&[0xE0, 0x25]); //           LDH (NR51),A      ; channel 2, both sides
+    p.emit(&[0x3E, 0x80]); //           LD A,0x80
+    p.emit(&[0xE0, 0x16]); //           LDH (NR21),A      ; 50% duty
+    p.emit(&[0x3E, 0xF3]); //           LD A,0xF3
+    p.emit(&[0xE0, 0x17]); //           LDH (NR22),A      ; loud, fading
+    p.emit(&[0x3E, 0x83]); //           LD A,0x83
+    p.emit(&[0xE0, 0x18]); //           LDH (NR23),A      ; frequency 0x783
+    p.emit(&[0x3E, 0x87]); //           LD A,0x87
+    p.emit(&[0xE0, 0x19]); //           LDH (NR24),A      ; play
+
     p.label("frame");
     p.label("wait_frame");
     p.emit(&[0xF0, 0x44]); //           LDH A,(LY)
@@ -269,6 +285,23 @@ mod tests {
         assert_eq!(sprite_position(&gb), (START_X, START_Y));
         let shades: std::collections::BTreeSet<u8> = gb.framebuffer().iter().copied().collect();
         assert_eq!(shades.into_iter().collect::<Vec<_>>(), vec![0, 1, 3]);
+    }
+
+    #[test]
+    fn plays_a_chime_that_fades_to_silence() {
+        let mut gb = GameBoy::new(&rom()).unwrap_or_else(|e| panic!("{e}"));
+        let mut loudest_per_frame = Vec::new();
+        for _ in 0..80 {
+            gb.run_frame();
+            let peak = gb
+                .audio_samples()
+                .iter()
+                .fold(0.0f32, |max, &s| max.max(s.abs()));
+            loudest_per_frame.push(peak);
+        }
+        let loudest = loudest_per_frame.iter().cloned().fold(0.0, f32::max);
+        assert!(loudest > 0.1, "peak {loudest}");
+        assert!(loudest_per_frame[79] < 0.01, "silent by the end");
     }
 
     #[test]
