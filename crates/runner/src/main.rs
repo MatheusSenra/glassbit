@@ -6,35 +6,50 @@
 //! `--screenshot out.png` saves the final screen. `--reference ref.png`
 //! turns the run into a visual test: the verdict is whether the screen
 //! matches that image pixel for pixel.
+//!
+//! `--gif out.gif` records `--frames` frames to an animation instead of
+//! looking for a verdict. While recording, `--press
+//! "start@70-75,left@140-146"` holds buttons during the given frames, and
+//! `--screenshot` saves the last frame.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use glassbit_core::cartridge::Header;
+use glassbit_core::GameBoy;
+use glassbit_runner::recording::{parse_presses, record_gif};
 use glassbit_runner::{run_screen_test, run_test, screenshot, Outcome};
 
 /// About two minutes of emulated time.
 const DEFAULT_MAX_FRAMES: u32 = 7200;
 
-const USAGE: &str =
-    "usage: glassbit-runner <rom.gb> [--frames N] [--screenshot out.png] [--reference ref.png]";
+const USAGE: &str = "usage: glassbit-runner <rom.gb> [--frames N] [--screenshot out.png] [--reference ref.png] [--gif out.gif] [--press button@from-until,...]";
 
 fn main() -> ExitCode {
     let mut path = None;
     let mut max_frames = DEFAULT_MAX_FRAMES;
     let mut screenshot_path: Option<PathBuf> = None;
     let mut reference_path: Option<PathBuf> = None;
+    let mut gif_path: Option<PathBuf> = None;
+    let mut presses = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--screenshot" || arg == "--reference" {
+        if ["--screenshot", "--reference", "--gif", "--press"].contains(&arg.as_str()) {
             let Some(value) = args.next() else {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             };
-            if arg == "--screenshot" {
-                screenshot_path = Some(value.into());
-            } else {
-                reference_path = Some(value.into());
+            match arg.as_str() {
+                "--screenshot" => screenshot_path = Some(value.into()),
+                "--reference" => reference_path = Some(value.into()),
+                "--gif" => gif_path = Some(value.into()),
+                _ => match parse_presses(&value) {
+                    Ok(parsed) => presses = parsed,
+                    Err(err) => {
+                        eprintln!("error: --press: {err}");
+                        return ExitCode::from(2);
+                    }
+                },
             }
         } else if arg == "--frames" {
             match args.next().and_then(|value| value.parse().ok()) {
@@ -72,6 +87,30 @@ fn main() -> ExitCode {
             eprintln!("error: {path}: {err}");
             return ExitCode::FAILURE;
         }
+    }
+
+    if let Some(gif) = gif_path {
+        let mut gb = match GameBoy::new(&rom) {
+            Ok(gb) => gb,
+            Err(err) => {
+                eprintln!("error: {path}: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
+        return match record_gif(&mut gb, max_frames, &presses, &gif) {
+            Ok(()) => {
+                println!("recorded {max_frames} frames to {}", gif.display());
+                if save_screenshot(gb.framebuffer(), screenshot_path.as_deref()) {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }
+            Err(err) => {
+                eprintln!("error: {}: {err}", gif.display());
+                ExitCode::FAILURE
+            }
+        };
     }
 
     if let Some(reference) = reference_path {

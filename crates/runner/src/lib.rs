@@ -16,6 +16,7 @@
 //! picture and signal that it is ready with the same `LD B,B` breakpoint. For
 //! those, [`run_screen_test`] returns the screen to compare with a reference.
 
+pub mod recording;
 pub mod screenshot;
 
 use std::path::{Path, PathBuf};

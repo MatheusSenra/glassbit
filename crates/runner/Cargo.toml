@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 glassbit-core.workspace = true
 png.workspace = true
+gif.workspace = true
 
 [lints]
 workspace = true
