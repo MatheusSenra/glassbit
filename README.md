@@ -7,7 +7,7 @@
 A Game Boy (DMG) emulator written in Rust that runs in the browser through
 WebAssembly, built to **show how the hardware works while the game runs**.
 
-> Status: early development. It runs in the browser with video and input, for ROM-only and small MBC1 cartridges. There is no sound and there are no saves yet.
+> Status: early development. It runs in the browser with video and input, for ROM-only and MBC1 cartridges. There is no sound and there are no saves yet.
 
 <p align="center"><img src="assets/dmg-acid2.png" alt="The dmg-acid2 test rendered by Glassbit" width="320"><br><em>The dmg-acid2 PPU test, rendered by Glassbit.</em></p>
 
@@ -96,6 +96,7 @@ What passes today, all of it checked by `cargo test` in CI:
 | Blargg `mem_timing` | all 3 |
 | dmg-acid2 | pixel-exact match with the reference image |
 | Mooneye `acceptance/timer` | all 13 |
+| Mooneye `emulator-only/mbc1` | 12 of 13 (all but the multicart one) |
 | Mooneye `acceptance`, other | 43, covering instruction, interrupt, HALT, OAM DMA and PPU mode timing and the post-boot state |
 
 Of the Mooneye acceptance tests that do not pass, most target console models
@@ -107,11 +108,11 @@ depend on I/O registers and a mapper not implemented yet.
 
 - [x] **Phase 0: Foundation.** Workspace, CI, licenses, test ROM script.
 - [x] **Phase 1: Cartridge and bus.** Header parsing, ROM-only cartridge, full memory map.
-- [x] **Phase 2: CPU.** All opcodes, validated against SingleStepTests and the individual Blargg `cpu_instrs` ROMs; serial port; ROM banking for MBC1.
+- [x] **Phase 2: CPU.** All opcodes, validated against SingleStepTests and the individual Blargg `cpu_instrs` ROMs; serial port.
 - [x] **Phase 3: Interrupts and timer.** IME, HALT (and its bug), EI delay, DIV/TIMA/TMA/TAC. Blargg `instr_timing`, `mem_timing`, all of `cpu_instrs` and Mooneye timer tests.
 - [x] **Phase 4: PPU.** Modes, STAT, background, window, sprites, OAM DMA. Pixel-exact `dmg-acid2`.
-- [x] **Phase 5: Playable web frontend.** Canvas, frame loop, keyboard, ROM loading, joypad, built-in demo cartridge.
-- [ ] **Phase 6: Mappers and saves.** The rest of MBC1 (RAM, large ROMs), MBC3, MBC5, battery RAM persisted in the browser.
+- [x] **Phase 5: Playable web frontend.** Canvas, frame loop, keyboard, ROM loading, joypad, built-in demo cartridge, MBC1.
+- [ ] **Phase 6: Mappers and saves.** MBC3, MBC5, battery RAM persisted in the browser.
 - [ ] **Phase 7: Audio.** All four APU channels through an AudioWorklet.
 - [ ] **Phase 7.5: X-ray mode.** Live CPU, PPU, memory and interrupt panels, in English and Portuguese.
 - [ ] **Phase 8: Polish.** GitHub Pages deploy, save states, fast-forward, palettes.
