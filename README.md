@@ -24,7 +24,8 @@ starts with a built-in demo, and you can load your own ROM.
 ## What it does
 
 - Runs ROM-only, MBC1, MBC3 and MBC5 cartridges, with video, sound and input.
-- Keeps battery saves in the browser, one per cartridge.
+- Keeps battery saves in the browser, one per cartridge, and exports or
+  imports them as `.sav` files compatible with other emulators.
 - Save states: freeze the whole machine and come back to that moment later.
 - Fast-forward at four times the speed, and four color palettes.
 - **X-ray panel**, in English or Portuguese, with links to the matching
@@ -37,6 +38,10 @@ starts with a built-in demo, and you can load your own ROM.
     hardware registers by name with their latest writes.
   - **Interrupts and timer**: what is enabled and requested, and the latest
     interrupts served.
+  - **Breakpoints**: stop before an instruction runs or right after the CPU
+    writes to an address.
+  - **Memory viewer**: any 256 bytes in hexadecimal, optionally following PC,
+    SP or HL, with the bytes a step changed highlighted.
 
 Not there yet: the MBC3 real-time clock does not tick, MBC2 and Game Boy
 Color games are not supported, and effects that change video registers in the
@@ -59,11 +64,14 @@ or key press, as browsers require.
 
 **Save state** and **Load state** keep one snapshot per game in the browser.
 They are separate from the game's own battery save, which is stored
-automatically whenever the game writes it.
+automatically whenever the game writes it. **Export .sav** and **Import
+.sav** move that battery save in and out of the browser; importing restarts
+the game with it.
 
 Open **X-ray**, pause, and use the step buttons to advance one instruction,
-one scanline or one frame. With the panel closed nothing is recorded and the
-game runs at full speed.
+one scanline or one frame. Click an instruction in the CPU section to put a
+breakpoint on it. Breakpoints only act while the panel is open; with it
+closed nothing is recorded and the game runs at full speed.
 
 ## How it is built
 
@@ -171,8 +179,10 @@ depends on I/O registers not implemented yet.
 - [x] **Phase 7: Audio.** All four APU channels through an AudioWorklet.
 - [x] **Phase 7.5: X-ray mode.** Live CPU, PPU, memory and interrupt panels, in English and Portuguese.
 - [x] **Phase 8: Polish.** GitHub Pages deploy, save states, fast-forward, palettes.
+- [x] **Phase 9: Debugging and saves.** `.sav` export and import, breakpoints, memory viewer.
+- [ ] **Phase 10: Link cable.** Two browsers linked over WebRTC.
+- [ ] **Phase 11: Game Boy Color.**
 
-Later: link cable over WebRTC, Game Boy Color.
 
 ## Legal
 

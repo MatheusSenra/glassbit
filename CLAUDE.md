@@ -122,6 +122,13 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
 - **README images:** `assets/demo.gif` is recorded with
   `glassbit-runner --gif ... --press ...`; `assets/xray.jpg` is a browser
   screenshot.
+- **Breakpoints** live in the web `Recorder` observer (only while X-ray is
+  open): `Observer::memory_write` sees every CPU write and
+  `Observer::should_stop` makes `run_frame`/`step_line` return early. Execute
+  breakpoints stop *before* the instruction at that address. OAM DMA copies
+  are not CPU writes and do not trigger write breakpoints.
+- **`.sav` import** restarts the game from the ROM bytes kept in JS
+  (`currentRom`), because a running game would not notice its RAM changing.
 - **Opcodes are decoded by bit fields** (octal `x y z`), not a 256-entry table.
 - **STOP is a NOP** and **illegal opcodes lock the CPU** until something needs
   more.
