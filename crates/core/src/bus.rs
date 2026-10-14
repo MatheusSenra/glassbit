@@ -225,6 +225,10 @@ impl<O: Observer> Bus<O> {
         self.serial.take_output()
     }
 
+    pub fn serial_mut(&mut self) -> &mut Serial {
+        &mut self.serial
+    }
+
     /// Advances every component by one M-cycle.
     fn tick(&mut self) {
         self.cycles += 1;

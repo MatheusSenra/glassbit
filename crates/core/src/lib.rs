@@ -98,6 +98,24 @@ impl<O: Observer> GameBoy<O> {
         self.bus.take_serial_output()
     }
 
+    /// Plugs in or unplugs a link cable. While plugged in, serial transfers
+    /// wait for the other console instead of reading all ones; carry the
+    /// messages between the two with [`GameBoy::take_link_messages`] and
+    /// [`GameBoy::receive_link_message`].
+    pub fn set_linked(&mut self, linked: bool) {
+        self.bus.serial_mut().set_linked(linked);
+    }
+
+    /// Messages to deliver to the console at the other end of the cable.
+    pub fn take_link_messages(&mut self) -> Vec<serial::LinkMessage> {
+        self.bus.serial_mut().take_link_messages()
+    }
+
+    /// Delivers a message from the console at the other end of the cable.
+    pub fn receive_link_message(&mut self, message: serial::LinkMessage) {
+        self.bus.serial_mut().receive_link_message(message);
+    }
+
     pub fn observer(&self) -> &O {
         &self.bus.observer
     }
@@ -717,6 +735,53 @@ mod tests {
         gb.run_frame();
         assert_eq!(gb.observer().writes, vec![(0xC000, 0x07)]);
         assert!(gb.cycles() > 10_000);
+    }
+
+    /// Two consoles whose cable is a function call: everything one side
+    /// sends is delivered after each frame.
+    fn run_linked(a: &mut GameBoy, b: &mut GameBoy, frames: usize) {
+        for _ in 0..frames {
+            a.run_frame();
+            b.run_frame();
+            for message in a.take_link_messages() {
+                b.receive_link_message(message);
+            }
+            for message in b.take_link_messages() {
+                a.receive_link_message(message);
+            }
+        }
+    }
+
+    /// A program that exchanges `byte` over the link and stores what it gets
+    /// at 0xC000: the master drives the clock, the other side waits for it.
+    fn link_program(byte: u8, master: bool) -> Vec<u8> {
+        let control = if master { 0x81 } else { 0x80 };
+        rom_running(&[
+            0x3E, byte, 0xE0, 0x01, // LD A,byte ; LDH (SB),A
+            0x3E, control, 0xE0, 0x02, // LD A,control ; LDH (SC),A
+            0xF0, 0x02, // wait: LDH A,(SC)
+            0xE6, 0x80, // AND 0x80
+            0x20, 0xFA, // JR NZ,wait
+            0xF0, 0x01, 0xEA, 0x00, 0xC0, // LDH A,(SB) ; LD ($C000),A
+        ])
+    }
+
+    #[test]
+    fn two_linked_consoles_exchange_a_byte() {
+        let mut master = GameBoy::new(&link_program(0x42, true)).unwrap_or_else(|e| panic!("{e}"));
+        let mut slave = GameBoy::new(&link_program(0x99, false)).unwrap_or_else(|e| panic!("{e}"));
+        master.set_linked(true);
+        slave.set_linked(true);
+        run_linked(&mut master, &mut slave, 5);
+        assert_eq!(master.peek(0xC000), 0x99);
+        assert_eq!(slave.peek(0xC000), 0x42);
+    }
+
+    #[test]
+    fn without_a_cable_the_master_reads_all_ones() {
+        let mut master = GameBoy::new(&link_program(0x42, true)).unwrap_or_else(|e| panic!("{e}"));
+        master.run_frame();
+        assert_eq!(master.peek(0xC000), 0xFF);
     }
 
     #[test]
