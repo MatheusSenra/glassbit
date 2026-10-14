@@ -13,7 +13,7 @@ use std::fmt;
 /// Identifies a Glassbit save state.
 pub const MAGIC: [u8; 4] = *b"GBST";
 /// Bumped whenever the layout changes.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 
 /// Why a save state could not be loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

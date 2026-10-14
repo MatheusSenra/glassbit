@@ -22,7 +22,12 @@
 //! timing tests, since Pan Docs gives them in dots relative to a line start
 //! that the CPU cannot observe directly.
 //!
-//! Reference: <https://gbdev.io/pandocs/Rendering.html>
+//! On a Game Boy Color in color mode the same machinery gets a second bank
+//! of video memory for tile attributes (palette, flips, priority) and eight
+//! palettes of four RGB colors each for the background and for sprites.
+//!
+//! Reference: <https://gbdev.io/pandocs/Rendering.html> and
+//! <https://gbdev.io/pandocs/Palettes.html>
 
 use crate::interrupts;
 use crate::state::{Reader, StateError, Writer};
@@ -39,6 +44,18 @@ pub const OBP0: u16 = 0xFF48;
 pub const OBP1: u16 = 0xFF49;
 pub const WY: u16 = 0xFF4A;
 pub const WX: u16 = 0xFF4B;
+/// CGB: selects the VRAM bank the CPU sees.
+pub const VBK: u16 = 0xFF4F;
+/// CGB: background palette index (bits 0-5) and auto-increment (bit 7).
+pub const BCPS: u16 = 0xFF68;
+/// CGB: background palette data at that index.
+pub const BCPD: u16 = 0xFF69;
+/// CGB: sprite palette index.
+pub const OCPS: u16 = 0xFF6A;
+/// CGB: sprite palette data.
+pub const OCPD: u16 = 0xFF6B;
+/// CGB: sprite priority mode (bit 0 clear: by OAM position).
+pub const OPRI: u16 = 0xFF6C;
 
 // LCDC bits.
 const LCDC_BG_ENABLE: u8 = 0x01;
@@ -58,6 +75,20 @@ const STAT_LYC: u8 = 0x40;
 
 // OAM attribute bits.
 const OBJ_PALETTE_1: u8 = 0x10;
+/// CGB: the sprite's tiles come from VRAM bank 1.
+const OBJ_BANK_1: u8 = 0x08;
+/// CGB: the sprite's palette (0-7).
+const OBJ_CGB_PALETTE: u8 = 0x07;
+
+// CGB background map attribute bits (stored in VRAM bank 1).
+const ATTR_PALETTE: u8 = 0x07;
+const ATTR_BANK_1: u8 = 0x08;
+const ATTR_FLIP_X: u8 = 0x20;
+const ATTR_FLIP_Y: u8 = 0x40;
+const ATTR_PRIORITY: u8 = 0x80;
+
+/// RGB555 white, the color of a blank screen.
+const WHITE: u16 = 0x7FFF;
 const OBJ_FLIP_X: u8 = 0x20;
 const OBJ_FLIP_Y: u8 = 0x40;
 const OBJ_BEHIND_BG: u8 = 0x80;
@@ -75,7 +106,10 @@ const FIRST_LINE_OAM_START: u8 = 1;
 const LINES_PER_FRAME: u8 = 154;
 const SPRITES_PER_LINE: usize = 10;
 
-const VRAM_SIZE: usize = 0x2000;
+/// Two banks of 8 KiB; DMG mode only uses the first.
+const VRAM_SIZE: usize = 0x4000;
+const VRAM_BANK_SIZE: usize = 0x2000;
+const PALETTE_RAM_SIZE: usize = 64;
 const OAM_SIZE: usize = 0xA0;
 
 /// What the PPU is doing; the numbers are the ones STAT reports.
@@ -92,6 +126,7 @@ pub enum Mode {
 struct SpritePixel {
     /// Color number 1-3 (0 is transparent and never stored).
     color: u8,
+    /// DMG: 0 or 1 for OBP0/OBP1. CGB: palette 0-7.
     palette: u8,
     behind_bg: bool,
 }
@@ -132,8 +167,20 @@ pub struct Ppu {
     /// Interrupt requests raised since the bus last collected them.
     interrupts: u8,
     frame_ready: bool,
-    /// One shade (0 = lightest, 3 = darkest) per pixel.
+    /// One shade (0 = lightest, 3 = darkest) per pixel. DMG mode only.
     framebuffer: Box<[u8]>,
+    /// Game Boy Color mode: attributes, banks and color palettes.
+    cgb: bool,
+    /// One RGB555 color per pixel. CGB mode only.
+    color_framebuffer: Box<[u16]>,
+    vram_bank: u8,
+    bg_palettes: [u8; PALETTE_RAM_SIZE],
+    obj_palettes: [u8; PALETTE_RAM_SIZE],
+    bcps: u8,
+    ocps: u8,
+    opri: u8,
+    /// Set when a visible line enters HBlank; HDMA copies a block then.
+    hblank_started: bool,
 }
 
 impl Ppu {
@@ -163,7 +210,45 @@ impl Ppu {
             interrupts: 0,
             frame_ready: false,
             framebuffer: vec![0; SCREEN_WIDTH * SCREEN_HEIGHT].into_boxed_slice(),
+            cgb: false,
+            color_framebuffer: vec![WHITE; SCREEN_WIDTH * SCREEN_HEIGHT].into_boxed_slice(),
+            vram_bank: 0,
+            bg_palettes: [0xFF; PALETTE_RAM_SIZE],
+            obj_palettes: [0xFF; PALETTE_RAM_SIZE],
+            bcps: 0,
+            ocps: 0,
+            opri: 0,
+            hblank_started: false,
         }
+    }
+
+    /// A PPU in Game Boy Color mode, in the post-boot state.
+    pub fn new_cgb() -> Self {
+        Self {
+            cgb: true,
+            ..Self::new()
+        }
+    }
+
+    /// Whether this PPU works in Game Boy Color mode.
+    pub fn is_cgb(&self) -> bool {
+        self.cgb
+    }
+
+    /// The screen in CGB mode: one RGB555 color per pixel, row by row.
+    pub fn color_framebuffer(&self) -> &[u16] {
+        &self.color_framebuffer
+    }
+
+    /// The Color palette RAM: background palettes, then sprite palettes,
+    /// 64 bytes each (8 palettes of 4 little-endian RGB555 colors).
+    pub fn palette_ram(&self) -> (&[u8], &[u8]) {
+        (&self.bg_palettes, &self.obj_palettes)
+    }
+
+    /// Returns `true` once each time a visible line enters HBlank.
+    pub fn take_hblank_started(&mut self) -> bool {
+        std::mem::take(&mut self.hblank_started)
     }
 
     pub fn mode(&self) -> Mode {
@@ -242,6 +327,7 @@ impl Ppu {
                 self.render_line();
             } else if self.line_cycle == HBLANK_START + self.drawing_penalty {
                 self.mode = Mode::HBlank;
+                self.hblank_started = true;
             }
         }
         self.update_stat_line();
@@ -259,12 +345,18 @@ impl Ppu {
         self.stat_line = line;
     }
 
+    /// Where `addr` (0x8000-0x9FFF) lands in VRAM, given the selected bank.
+    fn vram_index(&self, addr: u16) -> usize {
+        self.vram_bank as usize * VRAM_BANK_SIZE + (addr - 0x8000) as usize
+    }
+
     pub fn read_vram(&self, addr: u16) -> u8 {
-        self.vram[(addr - 0x8000) as usize]
+        self.vram[self.vram_index(addr)]
     }
 
     pub fn write_vram(&mut self, addr: u16, value: u8) {
-        self.vram[(addr - 0x8000) as usize] = value;
+        let index = self.vram_index(addr);
+        self.vram[index] = value;
     }
 
     pub fn read_oam(&self, addr: u16) -> u8 {
@@ -292,7 +384,24 @@ impl Ppu {
             OBP1 => self.obp1,
             WY => self.wy,
             WX => self.wx,
+            // The Color registers do not exist in DMG mode.
+            _ if !self.cgb => 0xFF,
+            VBK => 0xFE | self.vram_bank,
+            BCPS => self.bcps | 0x40,
+            BCPD => self.bg_palettes[(self.bcps & 0x3F) as usize],
+            OCPS => self.ocps | 0x40,
+            OCPD => self.obj_palettes[(self.ocps & 0x3F) as usize],
+            OPRI => 0xFE | self.opri,
             _ => 0xFF,
+        }
+    }
+
+    /// Writes palette RAM at the index register's position, advancing it
+    /// when its bit 7 asks for that.
+    fn write_palette(ram: &mut [u8; PALETTE_RAM_SIZE], index: &mut u8, value: u8) {
+        ram[(*index & 0x3F) as usize] = value;
+        if *index & 0x80 != 0 {
+            *index = 0x80 | (*index + 1) & 0x3F;
         }
     }
 
@@ -310,6 +419,7 @@ impl Ppu {
                     self.window_triggered = false;
                     self.window_line = 0;
                     self.framebuffer.fill(0);
+                    self.color_framebuffer.fill(WHITE);
                 } else if !was_on && self.lcd_on() {
                     // The first line after switching on has no OAM scan and
                     // reports mode 0 until drawing starts.
@@ -336,6 +446,13 @@ impl Ppu {
             OBP1 => self.obp1 = value,
             WY => self.wy = value,
             WX => self.wx = value,
+            _ if !self.cgb => {}
+            VBK => self.vram_bank = value & 0x01,
+            BCPS => self.bcps = value & 0xBF,
+            BCPD => Self::write_palette(&mut self.bg_palettes, &mut self.bcps, value),
+            OCPS => self.ocps = value & 0xBF,
+            OCPD => Self::write_palette(&mut self.obj_palettes, &mut self.ocps, value),
+            OPRI => self.opri = value & 0x01,
             _ => {}
         }
     }
@@ -347,12 +464,16 @@ impl Ppu {
         }
 
         // Color numbers (before the palette) of the background and window,
-        // kept because sprites need them to decide who is in front.
+        // kept because sprites need them to decide who is in front, and
+        // their CGB attributes.
         let mut bg_colors = [0u8; SCREEN_WIDTH];
-        let bg_enabled = self.lcdc & LCDC_BG_ENABLE != 0;
+        let mut bg_attributes = [0u8; SCREEN_WIDTH];
+        // In CGB mode LCDC bit 0 no longer hides the background; it only
+        // takes its priority over sprites away.
+        let bg_enabled = self.cgb || self.lcdc & LCDC_BG_ENABLE != 0;
         if bg_enabled {
-            self.render_background(&mut bg_colors);
-            self.render_window(&mut bg_colors);
+            self.render_background(&mut bg_colors, &mut bg_attributes);
+            self.render_window(&mut bg_colors, &mut bg_attributes);
         }
 
         let mut sprites = [None; SCREEN_WIDTH];
@@ -361,6 +482,26 @@ impl Ppu {
         }
 
         let start = self.ly as usize * SCREEN_WIDTH;
+        if self.cgb {
+            let bg_has_priority = self.lcdc & LCDC_BG_ENABLE != 0;
+            for x in 0..SCREEN_WIDTH {
+                let sprite = sprites[x].filter(|sprite: &SpritePixel| {
+                    bg_colors[x] == 0
+                        || !bg_has_priority
+                        || bg_attributes[x] & ATTR_PRIORITY == 0 && !sprite.behind_bg
+                });
+                self.color_framebuffer[start + x] = match sprite {
+                    Some(sprite) => cgb_color(&self.obj_palettes, sprite.palette, sprite.color),
+                    None => cgb_color(
+                        &self.bg_palettes,
+                        bg_attributes[x] & ATTR_PALETTE,
+                        bg_colors[x],
+                    ),
+                };
+            }
+            return;
+        }
+
         let row = &mut self.framebuffer[start..start + SCREEN_WIDTH];
         for (x, pixel) in row.iter_mut().enumerate() {
             *pixel = match sprites[x] {
@@ -380,17 +521,25 @@ impl Ppu {
         }
     }
 
-    fn render_background(&self, colors: &mut [u8; SCREEN_WIDTH]) {
+    fn render_background(
+        &self,
+        colors: &mut [u8; SCREEN_WIDTH],
+        attributes: &mut [u8; SCREEN_WIDTH],
+    ) {
         let map = self.tile_map(LCDC_BG_MAP_HIGH);
         let y = self.ly.wrapping_add(self.scy);
-        for (screen_x, color) in colors.iter_mut().enumerate() {
+        for screen_x in 0..SCREEN_WIDTH {
             // The background is a 256x256 picture that wraps around.
             let x = (screen_x as u8).wrapping_add(self.scx);
-            *color = self.tile_map_pixel(map, x, y);
+            (colors[screen_x], attributes[screen_x]) = self.tile_map_pixel(map, x, y);
         }
     }
 
-    fn render_window(&mut self, colors: &mut [u8; SCREEN_WIDTH]) {
+    fn render_window(
+        &mut self,
+        colors: &mut [u8; SCREEN_WIDTH],
+        attributes: &mut [u8; SCREEN_WIDTH],
+    ) {
         let visible =
             self.lcdc & LCDC_WINDOW_ENABLE != 0 && self.window_triggered && self.wx <= 166;
         if !visible {
@@ -399,9 +548,10 @@ impl Ppu {
         let map = self.tile_map(LCDC_WINDOW_MAP_HIGH);
         // WX is offset by 7: the window's left edge is at screen x = WX - 7.
         let first_x = (self.wx as usize).saturating_sub(7);
-        for (screen_x, color) in colors.iter_mut().enumerate().skip(first_x) {
+        for screen_x in first_x..SCREEN_WIDTH {
             let x = (screen_x + 7 - self.wx as usize) as u8;
-            *color = self.tile_map_pixel(map, x, self.window_line);
+            (colors[screen_x], attributes[screen_x]) =
+                self.tile_map_pixel(map, x, self.window_line);
         }
         self.window_line += 1;
     }
@@ -422,9 +572,12 @@ impl Ppu {
             .filter(|sprite| (sprite[0]..sprite[0].saturating_add(height)).contains(&line))
             .take(SPRITES_PER_LINE)
             .collect();
-        // Where sprites overlap, the one further left is in front; ties go
-        // to the one earlier in OAM (the sort is stable).
-        selected.sort_by_key(|sprite| sprite[1]);
+        // On DMG, where sprites overlap, the one further left is in front;
+        // ties go to the one earlier in OAM (the sort is stable). The Color
+        // only looks at the OAM position.
+        if !self.cgb || self.opri & 0x01 != 0 {
+            selected.sort_by_key(|sprite| sprite[1]);
+        }
 
         for sprite in selected {
             let (y, x, tile, attributes) = (sprite[0], sprite[1], sprite[2], sprite[3]);
@@ -434,8 +587,18 @@ impl Ppu {
             }
             // A tall sprite uses two consecutive tiles, the first one even.
             let tile = if height == 16 { tile & 0xFE } else { tile };
-            let data = tile as usize * 16 + row as usize * 2;
+            let bank = if self.cgb && attributes & OBJ_BANK_1 != 0 {
+                VRAM_BANK_SIZE
+            } else {
+                0
+            };
+            let data = bank + tile as usize * 16 + row as usize * 2;
             let (low, high) = (self.vram[data], self.vram[data + 1]);
+            let palette = if self.cgb {
+                attributes & OBJ_CGB_PALETTE
+            } else {
+                (attributes & OBJ_PALETTE_1 != 0) as u8
+            };
 
             for column in 0..8u8 {
                 // Sprite X is offset by 8.
@@ -454,7 +617,7 @@ impl Ppu {
                 if color != 0 {
                     pixels[screen_x] = Some(SpritePixel {
                         color,
-                        palette: (attributes & OBJ_PALETTE_1 != 0) as u8,
+                        palette,
                         behind_bg: attributes & OBJ_BEHIND_BG != 0,
                     });
                 }
@@ -471,17 +634,39 @@ impl Ppu {
         }
     }
 
-    /// The color number at pixel (`x`, `y`) of a 256x256 tile map.
-    fn tile_map_pixel(&self, map: usize, x: u8, y: u8) -> u8 {
-        let tile = self.vram[map + (y as usize / 8) * 32 + x as usize / 8];
+    /// The color number at pixel (`x`, `y`) of a 256x256 tile map, and the
+    /// tile's CGB attributes (always 0 in DMG mode).
+    fn tile_map_pixel(&self, map: usize, x: u8, y: u8) -> (u8, u8) {
+        let offset = map + (y as usize / 8) * 32 + x as usize / 8;
+        let tile = self.vram[offset];
+        // On the Color, bank 1 holds each map entry's attributes at the
+        // same position.
+        let attributes = if self.cgb {
+            self.vram[VRAM_BANK_SIZE + offset]
+        } else {
+            0
+        };
         // Tile numbers index 0x8000 directly, or are signed around 0x9000.
-        let base = if self.lcdc & LCDC_TILE_DATA_LOW != 0 {
+        let mut base = if self.lcdc & LCDC_TILE_DATA_LOW != 0 {
             tile as usize * 16
         } else {
             (0x1000 + (tile as i8 as i32) * 16) as usize
         };
-        let data = base + (y as usize % 8) * 2;
-        color_number(self.vram[data], self.vram[data + 1], 7 - x % 8)
+        if attributes & ATTR_BANK_1 != 0 {
+            base += VRAM_BANK_SIZE;
+        }
+        let mut row = y % 8;
+        if attributes & ATTR_FLIP_Y != 0 {
+            row = 7 - row;
+        }
+        let bit = if attributes & ATTR_FLIP_X != 0 {
+            x % 8
+        } else {
+            7 - x % 8
+        };
+        let data = base + row as usize * 2;
+        let color = color_number(self.vram[data], self.vram[data + 1], bit);
+        (color, attributes)
     }
 }
 
@@ -494,6 +679,13 @@ impl Default for Ppu {
 /// A pixel's 2-bit color number comes from the same bit of two bytes.
 fn color_number(low: u8, high: u8, bit: u8) -> u8 {
     (high >> bit & 1) << 1 | (low >> bit & 1)
+}
+
+/// Looks a color up in CGB palette RAM: 8 palettes of 4 little-endian
+/// RGB555 colors.
+fn cgb_color(ram: &[u8; PALETTE_RAM_SIZE], palette: u8, color: u8) -> u16 {
+    let index = palette as usize * 8 + color as usize * 2;
+    u16::from_le_bytes([ram[index], ram[index + 1]]) & 0x7FFF
 }
 
 /// Looks a color number up in a palette register (2 bits per color).
@@ -530,6 +722,17 @@ impl Ppu {
         w.u8(self.interrupts);
         w.bool(self.frame_ready);
         w.bytes(&self.framebuffer);
+        w.bool(self.cgb);
+        for &color in self.color_framebuffer.iter() {
+            w.u16(color);
+        }
+        w.u8(self.vram_bank);
+        w.bytes(&self.bg_palettes);
+        w.bytes(&self.obj_palettes);
+        w.u8(self.bcps);
+        w.u8(self.ocps);
+        w.u8(self.opri);
+        w.bool(self.hblank_started);
     }
 
     pub(crate) fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
@@ -566,6 +769,20 @@ impl Ppu {
         self.interrupts = r.u8()?;
         self.frame_ready = r.bool()?;
         r.bytes(&mut self.framebuffer)?;
+        // A state from a console in the other mode cannot be continued here.
+        if r.bool()? != self.cgb {
+            return Err(StateError::Corrupt);
+        }
+        for color in self.color_framebuffer.iter_mut() {
+            *color = r.u16()? & 0x7FFF;
+        }
+        self.vram_bank = r.u8()? & 0x01;
+        r.bytes(&mut self.bg_palettes)?;
+        r.bytes(&mut self.obj_palettes)?;
+        self.bcps = r.u8()? & 0xBF;
+        self.ocps = r.u8()? & 0xBF;
+        self.opri = r.u8()? & 0x01;
+        self.hblank_started = r.bool()?;
         // Values a running PPU can never hold would make it index out of
         // bounds later.
         let valid = self.ly < LINES_PER_FRAME
@@ -616,6 +833,115 @@ mod tests {
 
     fn pixel(ppu: &Ppu, x: usize, y: usize) -> u8 {
         ppu.framebuffer[y * SCREEN_WIDTH + x]
+    }
+
+    /// A CGB PPU with palette 0 set to four distinct colors, both for the
+    /// background and for sprites, and palette 1 to four others.
+    fn cgb_ppu() -> Ppu {
+        let mut ppu = Ppu::new_cgb();
+        ppu.write_register(BCPS, 0x80);
+        ppu.write_register(OCPS, 0x80);
+        for color in [
+            0x7FFFu16, 0x001F, 0x03E0, 0x7C00, 0x0000, 0x1111, 0x2222, 0x3333,
+        ] {
+            for byte in color.to_le_bytes() {
+                ppu.write_register(BCPD, byte);
+                ppu.write_register(OCPD, byte);
+            }
+        }
+        ppu
+    }
+
+    fn color(ppu: &Ppu, x: usize, y: usize) -> u16 {
+        ppu.color_framebuffer[y * SCREEN_WIDTH + x]
+    }
+
+    #[test]
+    fn cgb_palette_ram_auto_increments() {
+        let mut ppu = Ppu::new_cgb();
+        ppu.write_register(BCPS, 0x80 | 0x3E);
+        ppu.write_register(BCPD, 0x12);
+        ppu.write_register(BCPD, 0x34);
+        assert_eq!(ppu.read_register(BCPS), 0x80 | 0x40, "wrapped to 0");
+        ppu.write_register(BCPS, 0x3E);
+        assert_eq!(ppu.read_register(BCPD), 0x12);
+        ppu.write_register(BCPD, 0x56);
+        assert_eq!(ppu.read_register(BCPS), 0x40 | 0x3E, "no auto-increment");
+        assert_eq!(ppu.read_register(BCPD), 0x56);
+    }
+
+    #[test]
+    fn color_registers_do_not_exist_in_dmg_mode() {
+        let mut ppu = ppu();
+        ppu.write_register(VBK, 1);
+        assert_eq!(ppu.read_register(VBK), 0xFF);
+        assert_eq!(ppu.read_register(BCPS), 0xFF);
+        ppu.write_vram(0x8000, 0x12);
+        assert_eq!(ppu.vram[0], 0x12, "always bank 0");
+    }
+
+    #[test]
+    fn cgb_vram_has_two_banks() {
+        let mut ppu = Ppu::new_cgb();
+        ppu.write_vram(0x8000, 0x11);
+        ppu.write_register(VBK, 1);
+        assert_eq!(ppu.read_register(VBK), 0xFF);
+        assert_eq!(ppu.read_vram(0x8000), 0x00);
+        ppu.write_vram(0x8000, 0x22);
+        ppu.write_register(VBK, 0);
+        assert_eq!(ppu.read_vram(0x8000), 0x11);
+        assert_eq!(ppu.vram[VRAM_BANK_SIZE], 0x22);
+    }
+
+    #[test]
+    fn cgb_background_uses_attributes_for_palette_bank_and_flips() {
+        let mut ppu = cgb_ppu();
+        // Bank 1, tile 0: only the top-left pixel set, color 1.
+        ppu.vram[VRAM_BANK_SIZE] = 0x80;
+        // Map entry (0, 0): tile 0, attributes: palette 1, bank 1, flip X and Y.
+        ppu.vram[0x1800] = 0;
+        ppu.vram[VRAM_BANK_SIZE + 0x1800] = 0x01 | ATTR_BANK_1 | ATTR_FLIP_X | ATTR_FLIP_Y;
+        run_frame(&mut ppu);
+        assert_eq!(color(&ppu, 7, 7), 0x1111, "palette 1, color 1, flipped");
+        assert_eq!(color(&ppu, 0, 0), 0x0000, "palette 1, color 0");
+        assert_eq!(color(&ppu, 8, 0), 0x7FFF, "next tile: palette 0, color 0");
+    }
+
+    #[test]
+    fn cgb_sprites_use_their_own_palette_and_oam_order() {
+        let mut ppu = cgb_ppu();
+        solid_tile(&mut ppu, 1, 1);
+        solid_tile(&mut ppu, 2, 2);
+        ppu.write_register(LCDC, 0x93);
+        // Slot 0 is further right than slot 1, but on the Color the earlier
+        // OAM slot wins.
+        set_sprite(&mut ppu, 0, 16, 12, 1, 0x01);
+        set_sprite(&mut ppu, 1, 16, 8, 2, 0x00);
+        run_frame(&mut ppu);
+        assert_eq!(color(&ppu, 4, 0), 0x1111, "slot 0, palette 1, color 1");
+        assert_eq!(color(&ppu, 0, 0), 0x03E0, "slot 1, palette 0, color 2");
+    }
+
+    #[test]
+    fn cgb_lcdc_bit_0_puts_sprites_above_everything() {
+        let mut ppu = cgb_ppu();
+        solid_tile(&mut ppu, 1, 3);
+        solid_tile(&mut ppu, 2, 1);
+        // Background tile 2 (color 1) everywhere, with BG priority set.
+        ppu.vram[0x1800..0x1C00].fill(2);
+        ppu.vram[VRAM_BANK_SIZE + 0x1800..VRAM_BANK_SIZE + 0x1C00].fill(ATTR_PRIORITY);
+        set_sprite(&mut ppu, 0, 16, 8, 1, 0);
+        ppu.write_register(LCDC, 0x93);
+        run_frame(&mut ppu);
+        assert_eq!(color(&ppu, 0, 0), 0x001F, "background wins");
+        ppu.write_register(LCDC, 0x92);
+        run_frame(&mut ppu);
+        assert_eq!(
+            color(&ppu, 0, 0),
+            0x7C00,
+            "sprite wins; background still drawn"
+        );
+        assert_eq!(color(&ppu, 20, 0), 0x001F);
     }
 
     #[test]

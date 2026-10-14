@@ -19,7 +19,7 @@ pub mod state;
 pub mod timer;
 
 use bus::Bus;
-use cartridge::{Cartridge, CartridgeError, Header};
+use cartridge::{Cartridge, CartridgeError, CgbSupport, Header};
 use cpu::Cpu;
 pub use joypad::Button;
 use observer::{NullObserver, Observer};
@@ -40,6 +40,26 @@ pub const CYCLES_PER_LINE: u64 = 114;
 /// 1,048,576 M-cycles per second gives about 59.73 frames per second.
 pub const CYCLES_PER_FRAME: u64 = 154 * 114;
 
+/// Which console to emulate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Model {
+    /// The original Game Boy.
+    Dmg,
+    /// The Game Boy Color, running a game in color mode.
+    Cgb,
+}
+
+impl Model {
+    /// The console a cartridge asks for: games that support the Color run in
+    /// color mode, the rest on a DMG.
+    pub fn for_header(header: &Header) -> Self {
+        match header.cgb {
+            CgbSupport::None => Model::Dmg,
+            CgbSupport::Enhanced | CgbSupport::Only => Model::Cgb,
+        }
+    }
+}
+
 /// A Game Boy with a cartridge inserted.
 ///
 /// The type parameter is the [`Observer`] that receives inspection events;
@@ -51,21 +71,53 @@ pub struct GameBoy<O: Observer = NullObserver> {
 }
 
 impl GameBoy {
-    /// Powers on a console with the given ROM image inserted.
+    /// Powers on a console with the given ROM image inserted: a Game Boy
+    /// Color if the game supports it, otherwise a DMG.
     pub fn new(rom: &[u8]) -> Result<Self, CartridgeError> {
         Self::with_observer(rom, NullObserver)
+    }
+
+    /// Like [`GameBoy::new`], choosing the console. A game made only for the
+    /// DMG always runs on a DMG: the compatibility mode of the Color, which
+    /// adds colors to old games, is not emulated.
+    pub fn new_as(rom: &[u8], model: Model) -> Result<Self, CartridgeError> {
+        Self::with_observer_as(rom, NullObserver, Some(model))
     }
 }
 
 impl<O: Observer> GameBoy<O> {
     /// Like [`GameBoy::new`], reporting hardware events to `observer`.
     pub fn with_observer(rom: &[u8], observer: O) -> Result<Self, CartridgeError> {
+        Self::with_observer_as(rom, observer, None)
+    }
+
+    fn with_observer_as(
+        rom: &[u8],
+        observer: O,
+        model: Option<Model>,
+    ) -> Result<Self, CartridgeError> {
         let cartridge = Cartridge::new(rom)?;
+        let wanted = Model::for_header(cartridge.header());
+        let cgb = wanted == Model::Cgb && model != Some(Model::Dmg);
+        let cpu = if cgb {
+            Cpu::post_boot_cgb()
+        } else {
+            Cpu::post_boot(cartridge.header().header_checksum)
+        };
         Ok(Self {
-            cpu: Cpu::post_boot(cartridge.header().header_checksum),
-            bus: Bus::new(cartridge, observer),
+            cpu,
+            bus: Bus::new_model(cartridge, observer, cgb),
             audio: Vec::new(),
         })
+    }
+
+    /// The console being emulated.
+    pub fn model(&self) -> Model {
+        if self.bus.is_cgb() {
+            Model::Cgb
+        } else {
+            Model::Dmg
+        }
     }
 
     /// The header of the inserted cartridge.
@@ -149,7 +201,7 @@ impl<O: Observer> GameBoy<O> {
     /// steps for the duration of one line instead.
     pub fn step_line(&mut self) {
         let line = self.bus.ppu().ly();
-        let limit = self.bus.cycles() + CYCLES_PER_LINE;
+        let limit = self.bus.cycles() + CYCLES_PER_LINE * self.speed_factor();
         while self.bus.ppu().ly() == line && self.bus.cycles() < limit {
             self.step();
             if self.bus.observer.should_stop() {
@@ -174,7 +226,7 @@ impl<O: Observer> GameBoy<O> {
         // Anything produced by stepping outside of run_frame is dropped.
         self.bus.apu_mut().take_samples();
         self.audio.clear();
-        let limit = self.bus.cycles() + CYCLES_PER_FRAME;
+        let limit = self.bus.cycles() + CYCLES_PER_FRAME * self.speed_factor();
         while self.bus.cycles() < limit {
             self.step();
             if self.bus.take_frame_ready() || self.bus.observer.should_stop() {
@@ -184,11 +236,59 @@ impl<O: Observer> GameBoy<O> {
         self.audio.extend(self.bus.apu_mut().take_samples());
     }
 
-    /// The screen: `SCREEN_WIDTH * SCREEN_HEIGHT` shades, row by row, where
-    /// 0 is the lightest and 3 the darkest. Complete right after
-    /// [`GameBoy::run_frame`] returns.
+    /// How many CPU M-cycles make up one M-cycle of video time: 2 while a
+    /// Game Boy Color runs at double speed.
+    fn speed_factor(&self) -> u64 {
+        if self.bus.double_speed() {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// The screen on a DMG: `SCREEN_WIDTH * SCREEN_HEIGHT` shades, row by
+    /// row, where 0 is the lightest and 3 the darkest. Complete right after
+    /// [`GameBoy::run_frame`] returns. In color mode use
+    /// [`GameBoy::color_framebuffer`] instead.
     pub fn framebuffer(&self) -> &[u8] {
         self.bus.ppu().framebuffer()
+    }
+
+    /// The screen of a Game Boy Color in color mode: one RGB555 color per
+    /// pixel (5 bits each, red in the lowest bits), row by row.
+    pub fn color_framebuffer(&self) -> &[u16] {
+        self.bus.ppu().color_framebuffer()
+    }
+
+    /// On a Game Boy Color in color mode, its palette RAM: background
+    /// palettes, then sprite palettes (see [`ppu::Ppu::palette_ram`]).
+    pub fn palette_ram(&self) -> Option<(&[u8], &[u8])> {
+        self.bus.is_cgb().then(|| self.bus.ppu().palette_ram())
+    }
+
+    /// The screen as 8-bit RGB, whichever the model: DMG shades become four
+    /// grays, and 5-bit color channels are widened by repeating their top
+    /// bits (`x << 3 | x >> 2`).
+    pub fn rgb_framebuffer(&self) -> Vec<[u8; 3]> {
+        const GRAYS: [u8; 4] = [0xFF, 0xAA, 0x55, 0x00];
+        if self.bus.is_cgb() {
+            let widen = |channel: u16| ((channel << 3) | (channel >> 2)) as u8;
+            self.color_framebuffer()
+                .iter()
+                .map(|&color| {
+                    [
+                        widen(color & 0x1F),
+                        widen(color >> 5 & 0x1F),
+                        widen(color >> 10 & 0x1F),
+                    ]
+                })
+                .collect()
+        } else {
+            self.framebuffer()
+                .iter()
+                .map(|&shade| [GRAYS[shade as usize]; 3])
+                .collect()
+        }
     }
 
     /// Audio produced by the last call to [`GameBoy::run_frame`]:
@@ -782,6 +882,71 @@ mod tests {
         let mut master = GameBoy::new(&link_program(0x42, true)).unwrap_or_else(|e| panic!("{e}"));
         master.run_frame();
         assert_eq!(master.peek(0xC000), 0xFF);
+    }
+
+    /// A ROM that declares Color support and runs `program`.
+    fn color_rom_running(program: &[u8]) -> Vec<u8> {
+        let mut rom = rom_running(program);
+        rom[0x143] = 0x80;
+        rom
+    }
+
+    #[test]
+    fn color_games_start_a_game_boy_color() {
+        let gb = GameBoy::new(&color_rom_running(&[])).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(gb.model(), Model::Cgb);
+        assert_eq!(gb.cpu().regs.a, 0x11, "how games detect a Color");
+
+        let dmg =
+            GameBoy::new_as(&color_rom_running(&[]), Model::Dmg).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(dmg.model(), Model::Dmg);
+        assert_eq!(dmg.cpu().regs.a, 0x01);
+
+        let old = GameBoy::new_as(&rom_running(&[]), Model::Cgb).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(old.model(), Model::Dmg, "no compatibility mode");
+    }
+
+    #[test]
+    fn color_games_draw_in_color() {
+        // Set background palette 0, color 0 to pure red (RGB555 0x001F).
+        let rom = color_rom_running(&[
+            0x3E, 0x80, 0xE0, 0x68, // LD A,0x80 ; LDH (BCPS),A
+            0x3E, 0x1F, 0xE0, 0x69, // LD A,0x1F ; LDH (BCPD),A
+            0xAF, 0xE0, 0x69, // XOR A ; LDH (BCPD),A
+        ]);
+        let mut gb = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        gb.run_frame();
+        gb.run_frame();
+        assert!(gb.color_framebuffer().iter().all(|&color| color == 0x001F));
+        assert_eq!(gb.rgb_framebuffer()[0], [0xFF, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn double_speed_keeps_frames_the_same_length_in_real_time() {
+        // LD A,1 ; LDH (KEY1),A ; STOP
+        let rom = color_rom_running(&[0x3E, 0x01, 0xE0, 0x4D, 0x10]);
+        let mut gb = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        gb.run_frame();
+        gb.run_frame();
+        let start = gb.cycles();
+        gb.run_frame();
+        assert_eq!(gb.peek(0xFF4D) & 0x80, 0x80, "double speed");
+        let elapsed = gb.cycles() - start;
+        assert!(
+            (2 * CYCLES_PER_FRAME - 8..2 * CYCLES_PER_FRAME + 8).contains(&elapsed),
+            "{elapsed} CPU cycles per frame"
+        );
+    }
+
+    #[test]
+    fn a_color_state_does_not_load_into_a_dmg() {
+        let rom = color_rom_running(&[]);
+        let color = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        let mut dmg = GameBoy::new_as(&rom, Model::Dmg).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            dmg.load_state(&color.save_state()),
+            Err(StateError::Corrupt)
+        );
     }
 
     #[test]

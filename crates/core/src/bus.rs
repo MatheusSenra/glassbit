@@ -37,7 +37,49 @@ const DMA_LENGTH: u8 = 160;
 /// M-cycles between the write to DMA and the first byte being copied.
 const DMA_START_DELAY: u8 = 2;
 
-const WRAM_SIZE: usize = 0x2000;
+/// Eight banks of 4 KiB; DMG mode only uses the first two.
+const WRAM_SIZE: usize = 0x8000;
+const WRAM_BANK_SIZE: usize = 0x1000;
+
+// Game Boy Color registers handled by the bus itself.
+/// Speed switch: bit 0 arms it, STOP performs it, bit 7 is the current speed.
+const KEY1: u16 = 0xFF4D;
+/// VRAM DMA: source (FF51-52), destination (FF53-54), length and mode (FF55).
+const HDMA1: u16 = 0xFF51;
+const HDMA2: u16 = 0xFF52;
+const HDMA3: u16 = 0xFF53;
+const HDMA4: u16 = 0xFF54;
+const HDMA5: u16 = 0xFF55;
+/// Selects the work RAM bank seen at 0xD000-0xDFFF.
+const SVBK: u16 = 0xFF70;
+/// VRAM DMA moves 16 bytes per block.
+const HDMA_BLOCK: u16 = 16;
+/// A general-purpose VRAM DMA keeps the CPU waiting this many M-cycles per
+/// block at normal speed (twice as many at double speed).
+const GDMA_CYCLES_PER_BLOCK: u32 = 8;
+/// After STOP switches speed, the CPU stays stopped for about this long.
+const SPEED_SWITCH_CYCLES: u32 = 2050;
+
+/// State only the Game Boy Color has.
+#[derive(Debug, Clone, Copy, Default)]
+struct ColorState {
+    /// SVBK: work RAM bank 1-7 at 0xD000 (0 means 1).
+    wram_bank: u8,
+    /// KEY1 bit 0: STOP will switch speed.
+    speed_switch_armed: bool,
+    /// The CPU and the components clocked with it run twice as fast.
+    double_speed: bool,
+    /// At double speed the PPU and APU only advance every other M-cycle.
+    odd_cycle: bool,
+    hdma_source: u16,
+    hdma_destination: u16,
+    /// HBlank DMA in progress: copies one block at each HBlank.
+    hdma_active: bool,
+    /// Blocks left in the HBlank DMA, minus one (as FF55 reports it).
+    hdma_blocks_left: u8,
+    /// A general-purpose DMA was requested and runs after the write.
+    gdma_blocks: u8,
+}
 const IO_SIZE: usize = 0x80;
 const HRAM_SIZE: usize = 0x7F;
 
@@ -74,12 +116,21 @@ pub struct Bus<O: Observer = NullObserver> {
     dma_copying: bool,
     /// M-cycles elapsed since power on.
     cycles: u64,
+    /// Game Boy Color mode.
+    cgb: bool,
+    color: ColorState,
     pub observer: O,
 }
 
 impl<O: Observer> Bus<O> {
-    /// Creates a bus in the post-boot state with `cartridge` inserted.
+    /// Creates a DMG bus in the post-boot state with `cartridge` inserted.
     pub fn new(cartridge: Cartridge, observer: O) -> Self {
+        Self::new_model(cartridge, observer, false)
+    }
+
+    /// Creates a bus in the post-boot state of a DMG or, with `cgb`, of a
+    /// Game Boy Color running a color game.
+    pub fn new_model(cartridge: Cartridge, observer: O, cgb: bool) -> Self {
         Self {
             cartridge,
             wram: vec![0; WRAM_SIZE].into_boxed_slice(),
@@ -91,7 +142,7 @@ impl<O: Observer> Bus<O> {
             joypad: Joypad::new(),
             serial: Serial::new(),
             timer: Timer::new(),
-            ppu: Ppu::new(),
+            ppu: if cgb { Ppu::new_cgb() } else { Ppu::new() },
             apu: Apu::new(),
             dma_page: 0xFF,
             dma_delay: 0,
@@ -100,8 +151,20 @@ impl<O: Observer> Bus<O> {
             dma_index: 0,
             dma_copying: false,
             cycles: 0,
+            cgb,
+            color: ColorState::default(),
             observer,
         }
+    }
+
+    /// Whether this is a Game Boy Color running in color mode.
+    pub fn is_cgb(&self) -> bool {
+        self.cgb
+    }
+
+    /// Whether the CPU runs at double speed (Game Boy Color only).
+    pub fn double_speed(&self) -> bool {
+        self.color.double_speed
     }
 
     /// Swaps the observer for one of another type, keeping all hardware
@@ -127,6 +190,8 @@ impl<O: Observer> Bus<O> {
             dma_index: self.dma_index,
             dma_copying: self.dma_copying,
             cycles: self.cycles,
+            cgb: self.cgb,
+            color: self.color,
             observer,
         }
     }
@@ -150,6 +215,16 @@ impl<O: Observer> Bus<O> {
         w.u8(self.dma_index);
         w.bool(self.dma_copying);
         w.u64(self.cycles);
+        let color = &self.color;
+        w.u8(color.wram_bank);
+        w.bool(color.speed_switch_armed);
+        w.bool(color.double_speed);
+        w.bool(color.odd_cycle);
+        w.u16(color.hdma_source);
+        w.u16(color.hdma_destination);
+        w.bool(color.hdma_active);
+        w.u8(color.hdma_blocks_left);
+        w.u8(color.gdma_blocks);
     }
 
     pub(crate) fn load_state(&mut self, r: &mut Reader) -> Result<(), StateError> {
@@ -171,6 +246,16 @@ impl<O: Observer> Bus<O> {
         self.dma_index = r.u8()?;
         self.dma_copying = r.bool()?;
         self.cycles = r.u64()?;
+        let color = &mut self.color;
+        color.wram_bank = r.u8()? & 0x07;
+        color.speed_switch_armed = r.bool()?;
+        color.double_speed = r.bool()?;
+        color.odd_cycle = r.bool()?;
+        color.hdma_source = r.u16()? & 0xFFF0;
+        color.hdma_destination = r.u16()? & 0x1FF0;
+        color.hdma_active = r.bool()?;
+        color.hdma_blocks_left = r.u8()? & 0x7F;
+        color.gdma_blocks = r.u8()?;
         // A transfer in progress indexes OAM with this.
         if self.dma_active && self.dma_index >= DMA_LENGTH {
             return Err(StateError::Corrupt);
@@ -240,15 +325,118 @@ impl<O: Observer> Bus<O> {
             self.interrupt_flag |= interrupts::SERIAL;
         }
 
-        let mode = self.ppu.mode();
-        self.ppu.tick();
-        if self.ppu.mode() != mode {
-            self.observer.ppu_mode(self.ppu.mode(), self.ppu.ly());
+        // At double speed the CPU, timer, serial port and OAM DMA run twice
+        // as fast, but the screen and the sound keep their pace: they only
+        // advance on every other M-cycle.
+        self.color.odd_cycle = !self.color.odd_cycle;
+        if !self.color.double_speed || self.color.odd_cycle {
+            let mode = self.ppu.mode();
+            self.ppu.tick();
+            if self.ppu.mode() != mode {
+                self.observer.ppu_mode(self.ppu.mode(), self.ppu.ly());
+            }
+            self.interrupt_flag |= self.ppu.take_interrupts();
+            if self.ppu.take_hblank_started() && self.color.hdma_active {
+                self.copy_hdma_block();
+                self.color.hdma_blocks_left = self.color.hdma_blocks_left.wrapping_sub(1);
+                // The count goes below zero after the last block.
+                if self.color.hdma_blocks_left == 0xFF {
+                    self.color.hdma_active = false;
+                }
+            }
+            self.apu.tick();
         }
-        self.interrupt_flag |= self.ppu.take_interrupts();
-
-        self.apu.tick();
         self.tick_dma();
+    }
+
+    /// Copies one 16-byte block of a VRAM DMA and advances both addresses.
+    fn copy_hdma_block(&mut self) {
+        for _ in 0..HDMA_BLOCK {
+            let value = self.peek(self.color.hdma_source);
+            self.ppu
+                .write_vram(0x8000 | (self.color.hdma_destination & 0x1FFF), value);
+            self.color.hdma_source = self.color.hdma_source.wrapping_add(1);
+            self.color.hdma_destination = (self.color.hdma_destination + 1) & 0x1FFF;
+        }
+    }
+
+    /// Where 0xC000-0xDFFF lands in work RAM: bank 0 below 0xD000, the
+    /// selected bank (always 1 on DMG) above.
+    fn wram_index(&self, addr: u16) -> usize {
+        let offset = (addr & 0x1FFF) as usize;
+        if offset < WRAM_BANK_SIZE {
+            offset
+        } else {
+            let bank = if self.cgb {
+                (self.color.wram_bank & 0x07).max(1) as usize
+            } else {
+                1
+            };
+            bank * WRAM_BANK_SIZE + offset - WRAM_BANK_SIZE
+        }
+    }
+
+    fn read_color_register(&self, addr: u16) -> u8 {
+        match addr {
+            KEY1 => {
+                0x7E | (self.color.double_speed as u8) << 7 | self.color.speed_switch_armed as u8
+            }
+            // Reads 0xFF once the transfer is over; while it runs, bit 7 is
+            // clear and the rest counts the blocks left.
+            HDMA5 if self.color.hdma_active => self.color.hdma_blocks_left & 0x7F,
+            HDMA5 => 0xFF,
+            SVBK => 0xF8 | self.color.wram_bank,
+            ppu::VBK | ppu::BCPS..=ppu::OPRI => self.ppu.read_register(addr),
+            // The source and destination registers are write-only.
+            _ => 0xFF,
+        }
+    }
+
+    fn write_color_register(&mut self, addr: u16, value: u8) {
+        let color = &mut self.color;
+        match addr {
+            KEY1 => color.speed_switch_armed = value & 0x01 != 0,
+            HDMA1 => color.hdma_source = color.hdma_source & 0x00FF | (value as u16) << 8,
+            HDMA2 => color.hdma_source = color.hdma_source & 0xFF00 | (value & 0xF0) as u16,
+            HDMA3 => {
+                color.hdma_destination =
+                    color.hdma_destination & 0x00FF | ((value & 0x1F) as u16) << 8
+            }
+            HDMA4 => {
+                color.hdma_destination = color.hdma_destination & 0x1F00 | (value & 0xF0) as u16
+            }
+            HDMA5 => {
+                let blocks = value & 0x7F;
+                if color.hdma_active && value & 0x80 == 0 {
+                    // Clearing bit 7 during an HBlank DMA stops it.
+                    color.hdma_active = false;
+                } else if value & 0x80 != 0 {
+                    color.hdma_active = true;
+                    color.hdma_blocks_left = blocks;
+                } else {
+                    color.gdma_blocks = blocks + 1;
+                }
+            }
+            SVBK => color.wram_bank = value & 0x07,
+            ppu::VBK | ppu::BCPS..=ppu::OPRI => self.ppu.write_register(addr, value),
+            _ => {}
+        }
+    }
+
+    /// Runs a general-purpose VRAM DMA requested by the last write. The CPU
+    /// waits while the whole transfer happens.
+    fn run_gdma(&mut self) {
+        let blocks = std::mem::take(&mut self.color.gdma_blocks);
+        if blocks == 0 {
+            return;
+        }
+        for _ in 0..blocks {
+            self.copy_hdma_block();
+        }
+        let speed = if self.color.double_speed { 2 } else { 1 };
+        for _ in 0..blocks as u32 * GDMA_CYCLES_PER_BLOCK * speed {
+            self.tick();
+        }
     }
 
     fn tick_dma(&mut self) {
@@ -266,7 +454,7 @@ impl<O: Observer> Bus<O> {
             let source = u16::from_be_bytes([self.dma_source, self.dma_index]);
             // Pages above 0xDF are not decoded and read work RAM instead.
             let value = match source {
-                0xE000..=0xFFFF => self.wram[(source - 0xE000) as usize],
+                0xE000..=0xFFFF => self.wram[self.wram_index(source)],
                 _ => self.peek(source),
             };
             self.ppu.write_oam(0xFE00 + self.dma_index as u16, value);
@@ -293,8 +481,7 @@ impl<O: Observer> Bus<O> {
             0x0000..=0x7FFF => self.cartridge.read_rom(addr),
             0x8000..=0x9FFF => self.ppu.read_vram(addr),
             0xA000..=0xBFFF => self.cartridge.read_ram(addr),
-            0xC000..=0xDFFF => self.wram[(addr - 0xC000) as usize],
-            0xE000..=0xFDFF => self.wram[(addr - 0xE000) as usize],
+            0xC000..=0xFDFF => self.wram[self.wram_index(addr)],
             0xFE00..=0xFE9F => self.ppu.read_oam(addr),
             // On DMG this area reads zero.
             0xFEA0..=0xFEFF => 0x00,
@@ -306,6 +493,9 @@ impl<O: Observer> Bus<O> {
             apu::NR10..=apu::WAVE_RAM_END => self.apu.read(addr),
             DMA => self.dma_page,
             ppu::LCDC..=ppu::WX => self.ppu.read_register(addr),
+            KEY1 | ppu::VBK | HDMA1..=HDMA5 | ppu::BCPS..=ppu::OPRI | SVBK if self.cgb => {
+                self.read_color_register(addr)
+            }
             0xFF01..=0xFF7F => self.io[(addr - 0xFF00) as usize],
             0xFF80..=0xFFFE => self.hram[(addr - 0xFF80) as usize],
             interrupts::IE => self.interrupt_enable,
@@ -324,8 +514,10 @@ impl<O: Observer> Bus<O> {
             }
             0x8000..=0x9FFF => self.ppu.write_vram(addr, value),
             0xA000..=0xBFFF => self.cartridge.write_ram(addr, value),
-            0xC000..=0xDFFF => self.wram[(addr - 0xC000) as usize] = value,
-            0xE000..=0xFDFF => self.wram[(addr - 0xE000) as usize] = value,
+            0xC000..=0xFDFF => {
+                let index = self.wram_index(addr);
+                self.wram[index] = value;
+            }
             0xFE00..=0xFE9F => self.ppu.write_oam(addr, value),
             0xFEA0..=0xFEFF => {}
             0xFF00..=0xFF7F => {
@@ -345,6 +537,9 @@ impl<O: Observer> Bus<O> {
                         self.dma_delay = DMA_START_DELAY;
                     }
                     ppu::LCDC..=ppu::WX => self.ppu.write_register(addr, value),
+                    KEY1 | ppu::VBK | HDMA1..=HDMA5 | ppu::BCPS..=ppu::OPRI | SVBK if self.cgb => {
+                        self.write_color_register(addr, value)
+                    }
                     _ => self.io[(addr - 0xFF00) as usize] = value,
                 }
                 self.observer.io_write(addr, old, value);
@@ -376,10 +571,23 @@ impl<O: Observer> CpuBus for Bus<O> {
             return;
         }
         self.poke(addr, value);
+        self.run_gdma();
     }
 
     fn idle(&mut self) {
         self.tick();
+    }
+
+    fn stop(&mut self) {
+        // On the Color, STOP with KEY1 armed switches the CPU speed.
+        if self.cgb && self.color.speed_switch_armed {
+            self.color.speed_switch_armed = false;
+            self.color.double_speed = !self.color.double_speed;
+            self.timer.write(timer::DIV, 0);
+            for _ in 0..SPEED_SWITCH_CYCLES {
+                self.tick();
+            }
+        }
     }
 
     fn pending_interrupts(&self) -> u8 {
@@ -588,6 +796,112 @@ mod tests {
             bus.idle();
         }
         assert!(!bus.apu_mut().take_samples().is_empty());
+    }
+
+    fn cgb_bus() -> Bus {
+        let rom = RomBuilder::new().build();
+        let cartridge = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        Bus::new_model(cartridge, NullObserver, true)
+    }
+
+    #[test]
+    fn cgb_work_ram_has_switchable_banks() {
+        let mut bus = cgb_bus();
+        bus.poke(0xC000, 0x10);
+        for bank in 1..8u8 {
+            bus.poke(0xFF70, bank);
+            bus.poke(0xD000, bank);
+        }
+        for bank in 1..8u8 {
+            bus.poke(0xFF70, bank);
+            assert_eq!(bus.peek(0xD000), bank);
+            assert_eq!(bus.peek(0xF000), bank, "echo follows the bank");
+            assert_eq!(bus.peek(0xC000), 0x10, "bank 0 is fixed");
+        }
+        bus.poke(0xFF70, 0);
+        assert_eq!(bus.peek(0xD000), 1, "bank 0 selects bank 1");
+        assert_eq!(bus.peek(0xFF70), 0xF8);
+    }
+
+    #[test]
+    fn dmg_ignores_the_color_registers() {
+        let mut dmg = bus();
+        dmg.poke(0xC000, 0x10);
+        dmg.poke(0xFF70, 3);
+        dmg.poke(0xD000, 0x33);
+        dmg.poke(0xFF70, 1);
+        assert_eq!(dmg.peek(0xD000), 0x33);
+        assert_eq!(dmg.peek(0xFF4D), 0xFF);
+    }
+
+    #[test]
+    fn general_purpose_vram_dma_copies_at_once_and_stalls_the_cpu() {
+        let mut bus = cgb_bus();
+        for i in 0..32u16 {
+            bus.poke(0xC100 + i, i as u8 + 1);
+        }
+        bus.poke(0xFF40, 0x00); // LCD off, so VRAM is free
+        bus.poke(0xFF51, 0xC1);
+        bus.poke(0xFF52, 0x00);
+        bus.poke(0xFF53, 0x08);
+        bus.poke(0xFF54, 0x10);
+        let before = bus.cycles();
+        CpuBus::write(&mut bus, 0xFF55, 0x01); // two blocks
+        assert_eq!(bus.peek(0x8810), 1);
+        assert_eq!(bus.peek(0x882F), 32);
+        assert_eq!(bus.cycles() - before, 1 + 2 * 8);
+        assert_eq!(bus.peek(0xFF55), 0xFF, "finished");
+    }
+
+    #[test]
+    fn hblank_vram_dma_copies_one_block_per_line() {
+        let mut bus = cgb_bus();
+        for i in 0..48u16 {
+            bus.poke(0xC000 + i, 0xA0 + i as u8);
+        }
+        bus.poke(0xFF51, 0xC0);
+        bus.poke(0xFF52, 0x00);
+        bus.poke(0xFF53, 0x00);
+        bus.poke(0xFF54, 0x00);
+        bus.poke(0xFF55, 0x82); // three blocks, at HBlank
+        assert_eq!(bus.peek(0xFF55), 0x02);
+        for _ in 0..114 {
+            bus.idle();
+        }
+        assert_eq!(bus.peek(0x800F), 0xAF, "first block after the first HBlank");
+        assert_eq!(bus.peek(0x8010), 0x00);
+        assert_eq!(bus.peek(0xFF55), 0x01);
+        for _ in 0..2 * 114 {
+            bus.idle();
+        }
+        assert_eq!(bus.peek(0x802F), 0xCF);
+        assert_eq!(bus.peek(0xFF55), 0xFF, "done");
+    }
+
+    #[test]
+    fn stop_switches_to_double_speed_when_armed() {
+        let mut bus = cgb_bus();
+        bus.stop();
+        assert!(!bus.double_speed(), "not armed");
+        bus.poke(0xFF4D, 0x01);
+        assert_eq!(bus.peek(0xFF4D), 0x7F);
+        bus.stop();
+        assert!(bus.double_speed());
+        assert_eq!(bus.peek(0xFF4D), 0xFE);
+
+        // The PPU now takes two CPU M-cycles per dot group: a line lasts 228.
+        // Finish the current line, then measure a whole one.
+        let line = bus.peek(0xFF44);
+        while bus.peek(0xFF44) == line {
+            bus.idle();
+        }
+        let line = bus.peek(0xFF44);
+        let mut cycles = 0;
+        while bus.peek(0xFF44) == line {
+            bus.idle();
+            cycles += 1;
+        }
+        assert_eq!(cycles, 228);
     }
 
     #[test]

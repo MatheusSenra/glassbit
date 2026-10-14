@@ -41,9 +41,11 @@ impl Cpu {
                 bus.write(addr, lo);
                 bus.write(addr.wrapping_add(1), hi);
             }
-            // STOP. Its real behavior depends on buttons and pending
-            // interrupts and no test in scope relies on it; treated as a NOP.
-            (0, 2) => {}
+            // STOP. On the Color it performs a speed switch when one is
+            // armed. Its low-power mode depends on buttons and pending
+            // interrupts and no test in scope relies on it, so otherwise it
+            // does nothing.
+            (0, 2) => bus.stop(),
             // JR e
             (0, 3) => self.jump_relative(true, bus),
             // JR cc,e

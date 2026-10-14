@@ -33,6 +33,9 @@ pub trait CpuBus {
 
     /// The CPU is serving the interrupt with this bit: clear its request.
     fn acknowledge_interrupt(&mut self, _bit: u8) {}
+
+    /// The CPU executed STOP. On a Game Boy Color this can switch speed.
+    fn stop(&mut self) {}
 }
 
 /// The CPU state.
@@ -58,6 +61,26 @@ impl Cpu {
     pub fn post_boot(header_checksum: u8) -> Self {
         Self {
             regs: Registers::post_boot(header_checksum),
+            ..Self::default()
+        }
+    }
+
+    /// A CPU in the state the Game Boy Color boot ROM leaves it in when it
+    /// starts a color game. A = 0x11 is how games know they run on a Color.
+    ///
+    /// Reference: <https://gbdev.io/pandocs/Power_Up_Sequence.html#cpu-registers>
+    pub fn post_boot_cgb() -> Self {
+        let mut regs = Registers {
+            a: 0x11,
+            sp: 0xFFFE,
+            pc: 0x0100,
+            ..Registers::default()
+        };
+        regs.set_flags(true, false, false, false);
+        regs.set_de(0xFF56);
+        regs.set_hl(0x000D);
+        Self {
+            regs,
             ..Self::default()
         }
     }
