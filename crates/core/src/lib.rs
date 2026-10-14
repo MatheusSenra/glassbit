@@ -233,6 +233,7 @@ impl<O: Observer> GameBoy<O> {
                 break;
             }
         }
+        self.bus.sync_clock();
         self.audio.extend(self.bus.apu_mut().take_samples());
     }
 
@@ -308,9 +309,22 @@ impl<O: Observer> GameBoy<O> {
         self.bus.cartridge().has_battery()
     }
 
-    /// The cartridge's battery-backed RAM, for the frontend to store.
-    pub fn save_data(&self) -> Option<&[u8]> {
+    /// What the cartridge battery keeps, for the frontend to store: the RAM
+    /// and, on clock cartridges, the clock (see
+    /// [`cartridge::Cartridge::save_data_at`]).
+    pub fn save_data(&self) -> Option<Vec<u8>> {
         self.bus.cartridge().save_data()
+    }
+
+    /// Like [`GameBoy::save_data`], stamping the clock with `now` (seconds
+    /// since 1970) so it can catch up on the time spent away when loaded.
+    pub fn save_data_at(&self, now: u64) -> Option<Vec<u8>> {
+        self.bus.cartridge().save_data_at(now)
+    }
+
+    /// Like [`GameBoy::load_save`], letting a saved clock catch up to `now`.
+    pub fn load_save_at(&mut self, data: &[u8], now: u64) -> bool {
+        self.bus.cartridge_mut().load_save_at(data, now)
     }
 
     /// Restores battery-backed RAM stored earlier. Call it right after

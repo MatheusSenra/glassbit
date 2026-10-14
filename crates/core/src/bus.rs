@@ -116,6 +116,8 @@ pub struct Bus<O: Observer = NullObserver> {
     dma_copying: bool,
     /// M-cycles elapsed since power on.
     cycles: u64,
+    /// Real-time M-cycles not yet passed on to the cartridge clock.
+    clock_cycles: u64,
     /// Game Boy Color mode.
     cgb: bool,
     color: ColorState,
@@ -151,6 +153,7 @@ impl<O: Observer> Bus<O> {
             dma_index: 0,
             dma_copying: false,
             cycles: 0,
+            clock_cycles: 0,
             cgb,
             color: ColorState::default(),
             observer,
@@ -190,6 +193,7 @@ impl<O: Observer> Bus<O> {
             dma_index: self.dma_index,
             dma_copying: self.dma_copying,
             cycles: self.cycles,
+            clock_cycles: self.clock_cycles,
             cgb: self.cgb,
             color: self.color,
             observer,
@@ -215,6 +219,7 @@ impl<O: Observer> Bus<O> {
         w.u8(self.dma_index);
         w.bool(self.dma_copying);
         w.u64(self.cycles);
+        w.u64(self.clock_cycles);
         let color = &self.color;
         w.u8(color.wram_bank);
         w.bool(color.speed_switch_armed);
@@ -246,6 +251,7 @@ impl<O: Observer> Bus<O> {
         self.dma_index = r.u8()?;
         self.dma_copying = r.bool()?;
         self.cycles = r.u64()?;
+        self.clock_cycles = r.u64()?;
         let color = &mut self.color;
         color.wram_bank = r.u8()? & 0x07;
         color.speed_switch_armed = r.bool()?;
@@ -310,6 +316,16 @@ impl<O: Observer> Bus<O> {
         self.serial.take_output()
     }
 
+    /// Passes the time elapsed since the last call on to the cartridge's
+    /// real-time clock. Done lazily, before the game touches the cartridge
+    /// and at the end of each frame, instead of on every M-cycle.
+    pub fn sync_clock(&mut self) {
+        let cycles = std::mem::take(&mut self.clock_cycles);
+        if self.cartridge.has_clock() {
+            self.cartridge.advance_clock(cycles);
+        }
+    }
+
     pub fn serial_mut(&mut self) -> &mut Serial {
         &mut self.serial
     }
@@ -330,6 +346,7 @@ impl<O: Observer> Bus<O> {
         // advance on every other M-cycle.
         self.color.odd_cycle = !self.color.odd_cycle;
         if !self.color.double_speed || self.color.odd_cycle {
+            self.clock_cycles += 1;
             let mode = self.ppu.mode();
             self.ppu.tick();
             if self.ppu.mode() != mode {
@@ -506,6 +523,7 @@ impl<O: Observer> Bus<O> {
     pub fn poke(&mut self, addr: u16, value: u8) {
         match addr {
             0x0000..=0x7FFF => {
+                self.sync_clock();
                 let bank = self.cartridge.rom_bank();
                 self.cartridge.write_rom(addr, value);
                 if self.cartridge.rom_bank() != bank {
@@ -513,7 +531,10 @@ impl<O: Observer> Bus<O> {
                 }
             }
             0x8000..=0x9FFF => self.ppu.write_vram(addr, value),
-            0xA000..=0xBFFF => self.cartridge.write_ram(addr, value),
+            0xA000..=0xBFFF => {
+                self.sync_clock();
+                self.cartridge.write_ram(addr, value);
+            }
             0xC000..=0xFDFF => {
                 let index = self.wram_index(addr);
                 self.wram[index] = value;

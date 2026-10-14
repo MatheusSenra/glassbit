@@ -2,9 +2,11 @@
 
 mod header;
 mod mbc1;
+mod mbc2;
 mod mbc3;
 mod mbc5;
 mod rom_only;
+pub mod rtc;
 
 use std::fmt;
 
@@ -12,9 +14,11 @@ use crate::state::{Reader, StateError, Writer};
 
 pub use header::{CartridgeType, CgbSupport, Header, MapperKind};
 use mbc1::Mbc1;
+use mbc2::Mbc2;
 use mbc3::Mbc3;
 use mbc5::Mbc5;
 use rom_only::RomOnly;
+use rtc::Rtc;
 
 /// A memory bank controller: the chip that decides what the CPU sees in the
 /// cartridge's two address windows.
@@ -36,6 +40,13 @@ pub trait Mbc {
     /// what a battery keeps alive.
     fn ram(&self) -> &[u8];
     fn ram_mut(&mut self) -> &mut [u8];
+    /// The real-time clock, on mappers that can have one.
+    fn rtc(&self) -> Option<&Rtc> {
+        None
+    }
+    fn rtc_mut(&mut self) -> Option<&mut Rtc> {
+        None
+    }
     /// Writes the mapper's registers and RAM for a save state.
     fn save_state(&self, w: &mut Writer);
     /// Reads back what [`Mbc::save_state`] wrote.
@@ -84,6 +95,8 @@ pub struct Cartridge {
     mbc: Box<dyn Mbc>,
     /// RAM was written since the frontend last asked.
     ram_dirty: bool,
+    /// Kept outside the mapper so checking it costs no virtual call.
+    has_clock: bool,
 }
 
 impl Cartridge {
@@ -109,6 +122,8 @@ impl Cartridge {
             MapperKind::Mbc1 if header.rom_size <= mbc1::MAX_ROM_SIZE => {
                 Box::new(Mbc1::new(image, ram_size))
             }
+            // MBC2 has its RAM inside the mapper, whatever the header says.
+            MapperKind::Mbc2 => Box::new(Mbc2::new(image)),
             MapperKind::Mbc3 => Box::new(Mbc3::new(image, ram_size, kind.timer)),
             MapperKind::Mbc5 => Box::new(Mbc5::new(image, ram_size, kind.rumble)),
             _ => {
@@ -118,10 +133,12 @@ impl Cartridge {
             }
         };
 
+        let has_clock = mbc.rtc().is_some();
         Ok(Self {
             header,
             mbc,
             ram_dirty: false,
+            has_clock,
         })
     }
 
@@ -155,29 +172,65 @@ impl Cartridge {
         self.mbc.rom_bank()
     }
 
-    /// Whether the cartridge keeps its RAM when powered off, i.e. whether
-    /// there is anything worth saving.
+    /// Whether the cartridge keeps anything when powered off: RAM or a
+    /// clock, kept alive by a battery.
     pub fn has_battery(&self) -> bool {
-        self.header.cartridge_type.battery && !self.mbc.ram().is_empty()
+        self.header.cartridge_type.battery && (!self.mbc.ram().is_empty() || self.has_clock)
     }
 
-    /// The battery-backed RAM, to be stored by the frontend. `None` when
-    /// the cartridge has no battery.
-    pub fn save_data(&self) -> Option<&[u8]> {
-        self.has_battery().then(|| self.mbc.ram())
+    /// Whether the cartridge has a real-time clock (MBC3 with timer).
+    pub fn has_clock(&self) -> bool {
+        self.has_clock
     }
 
-    /// Restores battery-backed RAM from a previous [`Cartridge::save_data`].
-    /// Data of the wrong size is accepted: what fits is copied. Returns
-    /// `false` when the cartridge has no battery.
-    pub fn load_save(&mut self, data: &[u8]) -> bool {
+    /// Lets `cycles` M-cycles of real time pass for the clock, if any.
+    pub fn advance_clock(&mut self, cycles: u64) {
+        if let Some(rtc) = self.mbc.rtc_mut() {
+            rtc.advance(cycles);
+        }
+    }
+
+    /// What the battery keeps, to be stored by the frontend: the RAM, plus
+    /// on clock cartridges the clock and `now` (seconds since 1970) in the
+    /// footer format other emulators use. `None` without a battery.
+    pub fn save_data_at(&self, now: u64) -> Option<Vec<u8>> {
+        if !self.has_battery() {
+            return None;
+        }
+        let mut data = self.mbc.ram().to_vec();
+        if let Some(rtc) = self.mbc.rtc() {
+            data.extend_from_slice(&rtc.footer(now));
+        }
+        Some(data)
+    }
+
+    /// Like [`Cartridge::save_data_at`] without a timestamp: the clock will
+    /// not advance for time spent away when this is loaded.
+    pub fn save_data(&self) -> Option<Vec<u8>> {
+        self.save_data_at(0)
+    }
+
+    /// Restores what [`Cartridge::save_data_at`] produced. Data of the
+    /// wrong size is accepted: what fits is copied. A clock footer, if
+    /// present, is loaded and advanced by the time between its timestamp and
+    /// `now`. Returns `false` when the cartridge has no battery.
+    pub fn load_save_at(&mut self, data: &[u8], now: u64) -> bool {
         if !self.has_battery() {
             return false;
         }
         let ram = self.mbc.ram_mut();
         let len = ram.len().min(data.len());
         ram[..len].copy_from_slice(&data[..len]);
+        let ram_len = ram.len();
+        if let (Some(rtc), Some(footer)) = (self.mbc.rtc_mut(), data.get(ram_len..)) {
+            rtc.load_footer(footer, now);
+        }
         true
+    }
+
+    /// Like [`Cartridge::load_save_at`] when the current time is unknown.
+    pub fn load_save(&mut self, data: &[u8]) -> bool {
+        self.load_save_at(data, 0)
     }
 
     pub(crate) fn save_state(&self, w: &mut Writer) {
@@ -327,13 +380,48 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unimplemented_mappers() {
-        // MBC2.
-        let rom = RomBuilder::new().cartridge_type(0x05).build();
+    fn rejects_unknown_mappers() {
+        // 0xFC is the Pocket Camera.
+        let rom = RomBuilder::new().cartridge_type(0xFC).build();
         assert_eq!(
             Cartridge::new(&rom).err(),
-            Some(CartridgeError::UnsupportedMapper(0x05))
+            Some(CartridgeError::UnsupportedMapper(0xFC))
         );
+    }
+
+    #[test]
+    fn mbc2_saves_its_built_in_ram() {
+        // MBC2 + battery: the header declares no RAM, yet there are 512 bytes.
+        let rom = RomBuilder::new().cartridge_type(0x06).build();
+        let mut cart = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        assert!(cart.has_battery());
+        cart.write_rom(0x0000, 0x0A);
+        cart.write_ram(0xA001, 0x07);
+        let saved = cart.save_data().expect("battery");
+        assert_eq!(saved.len(), 512);
+        assert_eq!(saved[1], 0x07);
+    }
+
+    #[test]
+    fn clock_cartridges_save_the_clock_and_catch_up_on_load() {
+        // MBC3 + timer + battery, without RAM.
+        let rom = RomBuilder::new().cartridge_type(0x0F).build();
+        let mut cart = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        assert!(cart.has_clock());
+        assert!(cart.has_battery(), "the clock alone is worth saving");
+        cart.write_rom(0x0000, 0x0A);
+        cart.write_rom(0x4000, 0x08);
+        cart.write_ram(0xA000, 10);
+        let saved = cart.save_data_at(5_000).expect("battery");
+        assert_eq!(saved.len(), rtc::FOOTER_SIZE);
+
+        let mut later = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
+        assert!(later.load_save_at(&saved, 5_000 + 25));
+        later.write_rom(0x0000, 0x0A);
+        later.write_rom(0x6000, 0);
+        later.write_rom(0x6000, 1);
+        later.write_rom(0x4000, 0x08);
+        assert_eq!(later.read_ram(0xA000), 35, "25 seconds passed while closed");
     }
 
     #[test]
@@ -369,7 +457,7 @@ mod tests {
         let mut cart = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
         assert!(cart.load_save(&[0xAB; 16]));
         assert!(cart.load_save(&vec![0xCD; 0x4000]));
-        assert_eq!(cart.save_data().map(<[u8]>::len), Some(0x2000));
+        assert_eq!(cart.save_data().map(|data| data.len()), Some(0x2000));
     }
 
     #[test]

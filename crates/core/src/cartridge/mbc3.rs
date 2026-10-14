@@ -7,14 +7,11 @@
 //! | `0x0000..=0x1FFF` | `0x0A` in the low nibble enables RAM and the clock   |
 //! | `0x2000..=0x3FFF` | ROM bank, 7 bits (8 on MBC30); 0 becomes 1           |
 //! | `0x4000..=0x5FFF` | `0x00-0x03`: RAM bank (`-0x07` on MBC30); `0x08-0x0C`: a clock register |
-//! | `0x6000..=0x7FFF` | Latches the clock (ignored here)                     |
-//!
-//! The clock registers exist and can be read and written, but **the clock
-//! does not tick**: the core has no notion of wall-clock time yet. Games
-//! that use it still run; their in-game time just stands still.
+//! | `0x6000..=0x7FFF` | Writing 0 then 1 latches the clock (see [`Rtc`])     |
 //!
 //! Reference: <https://gbdev.io/pandocs/MBC3.html>
 
+use super::rtc::Rtc;
 use super::Mbc;
 use crate::state::{Reader, StateError, Writer};
 
@@ -35,8 +32,8 @@ enum Selected {
 pub struct Mbc3 {
     rom: Vec<u8>,
     ram: Vec<u8>,
-    has_clock: bool,
-    clock: [u8; 5],
+    /// The real-time clock, on cartridges that have one.
+    rtc: Option<Rtc>,
     enabled: bool,
     /// 7 bits (8 on MBC30), never zero.
     rom_bank: u8,
@@ -49,8 +46,7 @@ impl Mbc3 {
         Self {
             rom,
             ram: vec![0; ram_size],
-            has_clock,
-            clock: [0; 5],
+            rtc: has_clock.then(Rtc::new),
             enabled: false,
             rom_bank: 1,
             selected: Selected::RamBank(0),
@@ -79,7 +75,7 @@ impl Mbc3 {
     fn select(&mut self, value: u8) {
         self.selected = match value {
             bank if bank <= self.last_ram_bank() => Selected::RamBank(bank),
-            0x08..=0x0C if self.has_clock => Selected::Clock(value as usize - 0x08),
+            0x08..=0x0C if self.rtc.is_some() => Selected::Clock(value as usize - 0x08),
             _ => Selected::Nothing,
         }
     }
@@ -109,9 +105,11 @@ impl Mbc for Mbc3 {
             0x0000..=0x1FFF => self.enabled = value & 0x0F == 0x0A,
             0x2000..=0x3FFF => self.rom_bank = (value & self.rom_bank_mask()).max(1),
             0x4000..=0x5FFF => self.select(value),
-            // Latching copies the running clock into the registers; with a
-            // clock that does not tick there is nothing to copy.
-            _ => {}
+            _ => {
+                if let Some(rtc) = &mut self.rtc {
+                    rtc.write_latch(value);
+                }
+            }
         }
     }
 
@@ -124,7 +122,7 @@ impl Mbc for Mbc3 {
                 Some(index) => self.ram[index],
                 None => 0xFF,
             },
-            Selected::Clock(register) => self.clock[register],
+            Selected::Clock(register) => self.rtc.as_ref().map_or(0xFF, |rtc| rtc.read(register)),
             Selected::Nothing => 0xFF,
         }
     }
@@ -139,7 +137,11 @@ impl Mbc for Mbc3 {
                     self.ram[index] = value;
                 }
             }
-            Selected::Clock(register) => self.clock[register] = value,
+            Selected::Clock(register) => {
+                if let Some(rtc) = &mut self.rtc {
+                    rtc.write(register, value);
+                }
+            }
             Selected::Nothing => {}
         }
     }
@@ -156,6 +158,14 @@ impl Mbc for Mbc3 {
         &mut self.ram
     }
 
+    fn rtc(&self) -> Option<&Rtc> {
+        self.rtc.as_ref()
+    }
+
+    fn rtc_mut(&mut self) -> Option<&mut Rtc> {
+        self.rtc.as_mut()
+    }
+
     fn save_state(&self, w: &mut Writer) {
         w.bool(self.enabled);
         w.u8(self.rom_bank);
@@ -165,7 +175,9 @@ impl Mbc for Mbc3 {
             Selected::Clock(register) => 0x08 + register as u8,
             Selected::Nothing => 0xFF,
         });
-        w.bytes(&self.clock);
+        if let Some(rtc) = &self.rtc {
+            rtc.save_state(w);
+        }
         w.bytes(&self.ram);
     }
 
@@ -174,7 +186,9 @@ impl Mbc for Mbc3 {
         self.rom_bank = (r.u8()? & self.rom_bank_mask()).max(1);
         let selection = r.u8()?;
         self.select(selection);
-        r.bytes(&mut self.clock)?;
+        if let Some(rtc) = &mut self.rtc {
+            rtc.load_state(r)?;
+        }
         r.bytes(&mut self.ram)
     }
 }
@@ -262,6 +276,15 @@ mod tests {
         assert_eq!(cart.read_ram(0xA000), 42);
         cart.write_rom(0x4000, 0x00);
         assert_eq!(cart.read_ram(0xA000), 0x00, "RAM was not touched");
+
+        // The clock runs, and the game sees it after latching.
+        cart.rtc_mut()
+            .unwrap()
+            .advance(3 * super::super::rtc::CYCLES_PER_SECOND);
+        cart.write_rom(0x6000, 0);
+        cart.write_rom(0x6000, 1);
+        cart.write_rom(0x4000, 0x08);
+        assert_eq!(cart.read_ram(0xA000), 45);
     }
 
     #[test]
