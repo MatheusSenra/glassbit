@@ -28,6 +28,8 @@ starts with a built-in demo, and you can load your own ROM.
   imports them as `.sav` files compatible with other emulators.
 - Save states: freeze the whole machine and come back to that moment later.
 - Fast-forward at four times the speed, and four color palettes.
+- **Link cable over the internet**: two players connect their browsers
+  directly with WebRTC, by exchanging an invite and an answer code.
 - **X-ray panel**, in English or Portuguese, with links to the matching
   [Pan Docs](https://gbdev.io/pandocs/) pages:
   - **CPU**: registers and flags, the next instructions disassembled, and a
@@ -67,6 +69,13 @@ They are separate from the game's own battery save, which is stored
 automatically whenever the game writes it. **Export .sav** and **Import
 .sav** move that battery save in and out of the browser; importing restarts
 the game with it.
+
+**Link cable** connects two browsers. One player clicks **Host a game** and
+sends the invite code to the other (by chat, for example); the other pastes
+it under **Join a game** and sends back the answer code; the host pastes it
+and clicks **Connect**. Both need the same game loaded. The game data goes
+directly between the browsers; a public STUN server is only asked for each
+browser's internet address. Some strict networks block direct connections.
 
 Open **X-ray**, pause, and use the step buttons to advance one instruction,
 one scanline or one frame. Click an instruction in the CPU section to put a
@@ -180,7 +189,7 @@ depends on I/O registers not implemented yet.
 - [x] **Phase 7.5: X-ray mode.** Live CPU, PPU, memory and interrupt panels, in English and Portuguese.
 - [x] **Phase 8: Polish.** GitHub Pages deploy, save states, fast-forward, palettes.
 - [x] **Phase 9: Debugging and saves.** `.sav` export and import, breakpoints, memory viewer.
-- [ ] **Phase 10: Link cable.** Two browsers linked over WebRTC.
+- [x] **Phase 10: Link cable.** Two browsers linked over WebRTC.
 - [ ] **Phase 11: Game Boy Color.**
 
 

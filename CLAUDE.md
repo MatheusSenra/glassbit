@@ -129,6 +129,15 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
   are not CPU writes and do not trigger write breakpoints.
 - **`.sav` import** restarts the game from the ROM bytes kept in JS
   (`currentRom`), because a running game would not notice its RAM changing.
+- **Link cable:** `Serial` turns each transfer into `LinkMessage`s. The side
+  that drives the clock sends `Data` and its transfer lasts until the
+  `Reply` arrives (never less than the normal 1024 M-cycles); the other side
+  holds incoming `Data` until its game arms an external-clock transfer, then
+  answers. Both driving at once is resolved by each side's `Data` serving as
+  the other's reply. `www/link.js` carries the messages over an
+  `RTCDataChannel`; signaling is manual (copy-paste invite and answer codes,
+  deflated SDP in base64), so there is no server of ours. Link state is not
+  part of save states.
 - **Opcodes are decoded by bit fields** (octal `x y z`), not a 256-entry table.
 - **STOP is a NOP** and **illegal opcodes lock the CPU** until something needs
   more.
@@ -169,4 +178,4 @@ memory signature at `0xA000`, and Mooneye (registers B,C,D,E,H,L =
 
 ## Out of scope for now
 
-Game Boy Color; link cable over WebRTC (after Phase 8).
+Game Boy Color (phase 11).
