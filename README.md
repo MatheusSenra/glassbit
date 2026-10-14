@@ -5,8 +5,8 @@
 [![CI](https://github.com/MatheusSenra/glassbit/actions/workflows/ci.yml/badge.svg)](https://github.com/MatheusSenra/glassbit/actions/workflows/ci.yml)
 [![Pages](https://github.com/MatheusSenra/glassbit/actions/workflows/pages.yml/badge.svg)](https://matheussenra.github.io/glassbit/)
 
-A Game Boy (DMG) emulator written in Rust that runs in the browser through
-WebAssembly, built to **show how the hardware works while the game runs**.
+A Game Boy and Game Boy Color emulator written in Rust that runs in the
+browser through WebAssembly, built to **show how the hardware works while the game runs**.
 
 **[Try it in your browser](https://matheussenra.github.io/glassbit/)**: it
 starts with a built-in demo, and you can load your own ROM.
@@ -17,13 +17,21 @@ starts with a built-in demo, and you can load your own ROM.
 </p>
 
 <p align="center">
+  <img src="assets/dmg-acid2.png" alt="dmg-acid2 rendered by Glassbit" width="240">
+  <img src="assets/cgb-acid2.png" alt="cgb-acid2 rendered by Glassbit" width="240"><br>
+  <em>The dmg-acid2 and cgb-acid2 video tests, both pixel-exact.</em>
+</p>
+
+<p align="center">
   <img src="assets/xray.jpg" alt="The X-ray panel beside a running game" width="800"><br>
   <em>The X-ray panel: paused between two instructions, with the changed register highlighted.</em>
 </p>
 
 ## What it does
 
-- Runs ROM-only, MBC1, MBC3 and MBC5 cartridges, with video, sound and input.
+- Runs Game Boy and Game Boy Color games on ROM-only, MBC1, MBC3 and MBC5
+  cartridges, with video, sound and input. Color games get the Color's
+  palettes, banked memory, VRAM DMA and double speed.
 - Keeps battery saves in the browser, one per cartridge, and exports or
   imports them as `.sav` files compatible with other emulators.
 - Save states: freeze the whole machine and come back to that moment later.
@@ -45,9 +53,11 @@ starts with a built-in demo, and you can load your own ROM.
   - **Memory viewer**: any 256 bytes in hexadecimal, optionally following PC,
     SP or HL, with the bytes a step changed highlighted.
 
-Not there yet: the MBC3 real-time clock does not tick, MBC2 and Game Boy
-Color games are not supported, and effects that change video registers in the
-middle of a scanline may look different from real hardware.
+Not there yet: the MBC3 real-time clock does not tick, MBC2 cartridges are
+not supported, games made only for the original Game Boy always run on a DMG
+(the Color's compatibility mode, which colorizes them, is not emulated), and
+effects that change video registers in the middle of a scanline may look
+different from real hardware.
 
 ## Using it
 
@@ -164,6 +174,7 @@ What passes today, all of it checked by `cargo test` in CI:
 | Blargg `mem_timing` | all 3 |
 | Blargg `dmg_sound` | 9 of 12 (not the three about wave RAM access while playing) |
 | dmg-acid2 | pixel-exact match with the reference image |
+| cgb-acid2 | pixel-exact match with the reference image |
 | Mooneye `acceptance/timer` | all 13 |
 | Mooneye `emulator-only/mbc1` | 12 of 13 (all but the multicart one) |
 | Mooneye `emulator-only/mbc5` | all 8 |
@@ -190,7 +201,7 @@ depends on I/O registers not implemented yet.
 - [x] **Phase 8: Polish.** GitHub Pages deploy, save states, fast-forward, palettes.
 - [x] **Phase 9: Debugging and saves.** `.sav` export and import, breakpoints, memory viewer.
 - [x] **Phase 10: Link cable.** Two browsers linked over WebRTC.
-- [ ] **Phase 11: Game Boy Color.**
+- [x] **Phase 11: Game Boy Color.** Color palettes and tile attributes, VRAM and WRAM banks, VRAM DMA, double speed. Pixel-exact `cgb-acid2`.
 
 
 ## Legal

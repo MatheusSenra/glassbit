@@ -1,6 +1,6 @@
 # Glassbit
 
-Open source Game Boy (DMG) emulator in Rust + WebAssembly with an educational
+Open source Game Boy (DMG) and Game Boy Color emulator in Rust + WebAssembly with an educational
 "X-ray mode". The owner is a retro console enthusiast who wants to understand
 how the emulator works: implement the code and explain the important parts.
 
@@ -138,6 +138,17 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
   `RTCDataChannel`; signaling is manual (copy-paste invite and answer codes,
   deflated SDP in base64), so there is no server of ours. Link state is not
   part of save states.
+- **Game Boy Color:** `Model::for_header` picks the console: carts that
+  declare Color support (0x80/0xC0) run in color mode, the rest on a DMG.
+  DMG compatibility mode on a Color is not emulated (so Mooneye `misc/` CGB
+  tests, which are DMG carts, fail). Color state: VRAM 2x8 KiB (`Ppu`),
+  WRAM 8x4 KiB, palette RAM, VBK/SVBK/KEY1/HDMA (`Bus::ColorState`). The
+  color screen is a separate RGB555 framebuffer; `rgb_framebuffer()` gives
+  RGB for either model (`x << 3 | x >> 2`, as the test references expect).
+  Double speed ticks the PPU and APU every other CPU M-cycle. HBlank DMA
+  copies a block when a visible line enters HBlank, without stalling the
+  CPU; general DMA stalls it 8 M-cycles per block (16 at double speed).
+  `cgb-acid-hell` is 2 pixels off (mid-scanline effects).
 - **Opcodes are decoded by bit fields** (octal `x y z`), not a 256-entry table.
 - **STOP is a NOP** and **illegal opcodes lock the CPU** until something needs
   more.
@@ -176,6 +187,7 @@ memory signature at `0xA000`, and Mooneye (registers B,C,D,E,H,L =
   `scripts/fetch-test-roms.sh`.
 - License: dual MIT / Apache-2.0.
 
-## Out of scope for now
+## Not done yet
 
-Game Boy Color (phase 11).
+MBC2, the MBC3 real-time clock, DMG compatibility mode on the Color, a pixel
+FIFO for mid-scanline effects.
