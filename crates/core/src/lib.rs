@@ -134,6 +134,9 @@ impl<O: Observer> GameBoy<O> {
         let limit = self.bus.cycles() + CYCLES_PER_LINE;
         while self.bus.ppu().ly() == line && self.bus.cycles() < limit {
             self.step();
+            if self.bus.observer.should_stop() {
+                break;
+            }
         }
     }
 
@@ -147,7 +150,8 @@ impl<O: Observer> GameBoy<O> {
     /// Emulates until the PPU finishes drawing a frame (the start of VBlank).
     ///
     /// While the LCD is switched off no frame ever finishes, so this also
-    /// returns after one frame's worth of time.
+    /// returns after one frame's worth of time. It also returns early when
+    /// the observer asks to stop (see [`Observer::should_stop`]).
     pub fn run_frame(&mut self) {
         // Anything produced by stepping outside of run_frame is dropped.
         self.bus.apu_mut().take_samples();
@@ -155,7 +159,7 @@ impl<O: Observer> GameBoy<O> {
         let limit = self.bus.cycles() + CYCLES_PER_FRAME;
         while self.bus.cycles() < limit {
             self.step();
-            if self.bus.take_frame_ready() {
+            if self.bus.take_frame_ready() || self.bus.observer.should_stop() {
                 break;
             }
         }
@@ -671,6 +675,48 @@ mod tests {
         longer.push(0);
         assert_eq!(gb.load_state(&longer), Err(StateError::Corrupt));
         assert_eq!(gb.load_state(&state), Ok(()));
+    }
+
+    /// Stops when PC reaches an address, like a debugger breakpoint.
+    struct StopAt {
+        address: u16,
+        hit: bool,
+        writes: Vec<(u16, u8)>,
+    }
+
+    impl Observer for StopAt {
+        fn instruction(&mut self, _before: &cpu::Registers, after: &cpu::Registers) {
+            self.hit |= after.pc == self.address;
+        }
+
+        fn memory_write(&mut self, addr: u16, value: u8) {
+            self.writes.push((addr, value));
+        }
+
+        fn should_stop(&mut self) -> bool {
+            std::mem::take(&mut self.hit)
+        }
+    }
+
+    #[test]
+    fn observer_can_stop_a_frame_early_and_sees_every_write() {
+        // LD A,7 ; LD ($C000),A ; then spin.
+        let rom = rom_running(&[0x3E, 0x07, 0xEA, 0x00, 0xC0]);
+        let observer = StopAt {
+            address: 0x0152,
+            hit: false,
+            writes: Vec::new(),
+        };
+        let mut gb = GameBoy::with_observer(&rom, observer).unwrap_or_else(|e| panic!("{e}"));
+        gb.run_frame();
+        assert_eq!(gb.cpu().regs.pc, 0x0152, "stopped before the store");
+        assert!(gb.cycles() < 100);
+        assert!(gb.observer().writes.is_empty());
+
+        // Running again executes the store and goes on to the end of the frame.
+        gb.run_frame();
+        assert_eq!(gb.observer().writes, vec![(0xC000, 0x07)]);
+        assert!(gb.cycles() > 10_000);
     }
 
     #[test]

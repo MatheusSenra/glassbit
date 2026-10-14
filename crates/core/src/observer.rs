@@ -25,6 +25,16 @@ pub trait Observer {
 
     /// A write landed on an I/O register (`0xFF00..=0xFF7F`) or on IE (`0xFFFF`).
     fn io_write(&mut self, _addr: u16, _old: u8, _new: u8) {}
+
+    /// The CPU wrote `value` to `addr` (any address, including writes that
+    /// the hardware then ignores).
+    fn memory_write(&mut self, _addr: u16, _value: u8) {}
+
+    /// Asked after every instruction while running a frame or a line: return
+    /// `true` to stop there, e.g. because a breakpoint was reached.
+    fn should_stop(&mut self) -> bool {
+        false
+    }
 }
 
 /// An observer that ignores everything.

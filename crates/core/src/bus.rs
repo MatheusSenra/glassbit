@@ -367,6 +367,7 @@ impl<O: Observer> CpuBus for Bus<O> {
 
     fn write(&mut self, addr: u16, value: u8) {
         self.tick();
+        self.observer.memory_write(addr, value);
         if self.cpu_locked_out(addr) {
             return;
         }
