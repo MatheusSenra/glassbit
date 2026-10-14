@@ -5,6 +5,7 @@
 import init, { Emulator, core_version, screen_height, screen_width } from "./pkg/glassbit_web.js";
 import { AudioOutput } from "./audio.js";
 import { LANGUAGES, getLanguage, onLanguageChange, setLanguage, t, translatePage } from "./i18n.js";
+import { LinkCable } from "./link.js";
 import { readSave, readState, writeSave, writeState } from "./saves.js";
 import { Xray } from "./xray.js";
 
@@ -52,6 +53,8 @@ const muteButton = document.getElementById("mute");
 const xrayButton = document.getElementById("xray-toggle");
 const fastButton = document.getElementById("fast");
 const exportSaveButton = document.getElementById("export-save");
+const linkButton = document.getElementById("link-toggle");
+const linkDialog = document.getElementById("link-dialog");
 const importSaveLabel = document.getElementById("import-save-label");
 const paletteSelect = document.getElementById("palette");
 const languageSelect = document.getElementById("language");
@@ -140,6 +143,7 @@ async function start(newEmulator, message, { keepPreviousSave = true } = {}) {
   newEmulator.set_palette(new Uint8Array(PALETTES[paletteName].flat()));
   newEmulator.set_xray(xray.open);
   newEmulator.set_breakpoints(...xray.breakpointArrays());
+  newEmulator.set_linked(link.connected);
   exportSaveButton.hidden = !newEmulator.has_battery();
   importSaveLabel.hidden = !newEmulator.has_battery();
   xray.setStopReason(null);
@@ -199,6 +203,7 @@ function onAnimationFrame(now) {
   let ran = false;
   while (pendingMs >= FRAME_MS) {
     emulator.run_frame();
+    link.send(emulator.take_link_messages());
     if (audio.running && !fast) audio.push(emulator.audio_samples());
     pendingMs -= FRAME_MS;
     framesSinceXray++;
@@ -217,6 +222,77 @@ function onAnimationFrame(now) {
   }
 }
 
+// ---- Link cable ------------------------------------------------------
+
+const link = new LinkCable({
+  onMessage: (bytes) => emulator?.receive_link_messages(bytes),
+  onStateChange: (state) => {
+    emulator?.set_linked(state === "connected");
+    showLinkState();
+  },
+});
+
+function showLinkState() {
+  const state = document.getElementById("link-state");
+  state.textContent = t(`link.state.${link.state}`);
+  state.classList.toggle("connected", link.connected);
+  linkButton.textContent = t(link.connected ? "link.buttonConnected" : "link.button");
+  if (link.state === "closed" || link.state === "idle") {
+    document.getElementById("link-host-steps").hidden = true;
+    document.getElementById("link-join-steps").hidden = true;
+  }
+}
+
+// Runs one step of the connection setup, reporting failures in the dialog.
+async function linkStep(action) {
+  try {
+    await action();
+  } catch (error) {
+    document.getElementById("link-state").textContent = t("link.error", error.message ?? String(error));
+  }
+}
+
+function copyField(id) {
+  const field = document.getElementById(id);
+  field.select();
+  navigator.clipboard?.writeText(field.value).then(
+    () => (document.getElementById("link-state").textContent = t("link.copied")),
+    () => {},
+  );
+}
+
+linkButton.addEventListener("click", () => {
+  showLinkState();
+  linkDialog.showModal();
+});
+document.getElementById("link-close").addEventListener("click", () => {
+  linkDialog.close();
+  canvas.focus();
+});
+document.getElementById("link-disconnect").addEventListener("click", () => link.close());
+document.getElementById("link-host").addEventListener("click", () =>
+  linkStep(async () => {
+    document.getElementById("link-state").textContent = t("link.preparing");
+    document.getElementById("link-invite").value = await link.host();
+    document.getElementById("link-host-steps").hidden = false;
+    showLinkState();
+  }),
+);
+document.getElementById("link-connect").addEventListener("click", () =>
+  linkStep(() => link.accept(document.getElementById("link-answer-in").value)),
+);
+document.getElementById("link-join").addEventListener("click", () =>
+  linkStep(async () => {
+    document.getElementById("link-state").textContent = t("link.preparing");
+    const invite = document.getElementById("link-invite-in").value;
+    document.getElementById("link-answer").value = await link.join(invite);
+    document.getElementById("link-join-steps").hidden = false;
+    showLinkState();
+  }),
+);
+document.getElementById("link-copy-invite").addEventListener("click", () => copyField("link-invite"));
+document.getElementById("link-copy-answer").addEventListener("click", () => copyField("link-answer"));
+
 // Pauses the game where a breakpoint stopped it and shows why.
 function stopAtBreakpoint(report) {
   xray.setStopReason(report);
@@ -231,6 +307,7 @@ function step(advance, singleInstruction = false) {
   xray.setStopReason(null);
   xray.beforeStep(emulator, singleInstruction);
   advance(emulator);
+  link.send(emulator.take_link_messages());
   // A line or frame step can also end at a breakpoint.
   xray.setStopReason(emulator.take_breakpoint_hit() ?? null);
   draw();
@@ -480,6 +557,7 @@ onLanguageChange(() => {
   xrayButton.textContent = t(xray.open ? "button.xrayClose" : "button.xray");
   showFastButton();
   fillPaletteSelect();
+  showLinkState();
   xray.render(emulator, paused);
 });
 
@@ -533,5 +611,6 @@ window.glassbit = {
   setPalette,
   exportSave,
   importSave,
+  link,
   stopAtBreakpoint,
 };

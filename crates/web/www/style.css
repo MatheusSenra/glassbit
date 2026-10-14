@@ -145,6 +145,64 @@ button:hover,
   text-align: center;
 }
 
+/* Link cable dialog */
+
+#link-dialog {
+  width: min(46rem, calc(100vw - 2rem));
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+
+#link-dialog::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#link-dialog h2 {
+  margin: 0 0 0.25rem;
+  color: var(--accent);
+  font-size: 1.15rem;
+}
+
+#link-dialog h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+#link-dialog .note {
+  text-align: left;
+}
+
+#link-dialog textarea {
+  width: 100%;
+  font: 0.75rem/1.3 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem;
+  resize: vertical;
+  word-break: break-all;
+}
+
+.link-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1.25rem;
+  margin: 0.75rem 0;
+}
+
+.link-columns p {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.9rem;
+}
+
+#link-state.connected {
+  color: var(--accent);
+}
+
 /* Layout: the game on the left, the X-ray panel beside it when open. */
 
 #layout {

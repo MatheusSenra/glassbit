@@ -30,6 +30,7 @@
           <button id="mute" type="button" data-i18n="button.mute"></button>
           <button id="demo" type="button" data-i18n="button.demo"></button>
           <button id="xray-toggle" type="button" aria-controls="xray" aria-expanded="false" data-i18n="button.xray"></button>
+          <button id="link-toggle" type="button" aria-controls="link-dialog" data-i18n="link.button"></button>
         </div>
         <div class="controls">
           <button id="export-save" type="button" data-i18n="button.exportSave" hidden></button>
@@ -63,6 +64,44 @@
 
       <aside id="xray" hidden></aside>
     </div>
+
+    <dialog id="link-dialog">
+      <h2 data-i18n="link.title"></h2>
+      <p class="note" data-i18n="link.intro"></p>
+      <p id="link-state" role="status"></p>
+
+      <div class="link-columns">
+        <section>
+          <h3 data-i18n="link.host"></h3>
+          <button id="link-host" type="button" data-i18n="link.host"></button>
+          <div id="link-host-steps" hidden>
+            <p data-i18n="link.hostHint"></p>
+            <textarea id="link-invite" readonly rows="4"></textarea>
+            <button id="link-copy-invite" type="button" data-i18n="link.copy"></button>
+            <p data-i18n="link.answerPrompt"></p>
+            <textarea id="link-answer-in" rows="4"></textarea>
+            <button id="link-connect" type="button" data-i18n="link.connect"></button>
+          </div>
+        </section>
+        <section>
+          <h3 data-i18n="link.join"></h3>
+          <p data-i18n="link.invitePrompt"></p>
+          <textarea id="link-invite-in" rows="4"></textarea>
+          <button id="link-join" type="button" data-i18n="link.joinButton"></button>
+          <div id="link-join-steps" hidden>
+            <p data-i18n="link.answerHint"></p>
+            <textarea id="link-answer" readonly rows="4"></textarea>
+            <button id="link-copy-answer" type="button" data-i18n="link.copy"></button>
+          </div>
+        </section>
+      </div>
+
+      <p class="note" data-i18n="link.privacy"></p>
+      <div class="controls">
+        <button id="link-disconnect" type="button" data-i18n="link.disconnect"></button>
+        <button id="link-close" type="button" data-i18n="link.close"></button>
+      </div>
+    </dialog>
 
     <script type="module" src="main.js"></script>
   </body>

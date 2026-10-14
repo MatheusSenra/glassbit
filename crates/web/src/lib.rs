@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use glassbit_core::cpu::Registers;
 use glassbit_core::observer::Observer;
 use glassbit_core::ppu::Mode;
+use glassbit_core::serial::LinkMessage;
 use glassbit_core::{Button, GameBoy, SCREEN_HEIGHT, SCREEN_WIDTH};
 use wasm_bindgen::prelude::*;
 
@@ -289,6 +290,39 @@ impl Emulator {
     pub fn set_button(&mut self, button: u8, pressed: bool) {
         if let Some(&button) = Button::ALL.get(button as usize) {
             on!(self.machine_mut(), gb => gb.set_button(button, pressed));
+        }
+    }
+
+    // ---- Link cable ---------------------------------------------------
+
+    /// Plugs in or unplugs the link cable.
+    pub fn set_linked(&mut self, linked: bool) {
+        on!(self.machine_mut(), gb => gb.set_linked(linked))
+    }
+
+    /// Messages for the other console, as pairs of bytes: a kind (0 for
+    /// data, 1 for a reply) followed by the value.
+    pub fn take_link_messages(&mut self) -> Vec<u8> {
+        let messages = on!(self.machine_mut(), gb => gb.take_link_messages());
+        messages
+            .into_iter()
+            .flat_map(|message| match message {
+                LinkMessage::Data(byte) => [0, byte],
+                LinkMessage::Reply(byte) => [1, byte],
+            })
+            .collect()
+    }
+
+    /// Delivers messages from the other console, in the format of
+    /// `take_link_messages`. Malformed input is ignored.
+    pub fn receive_link_messages(&mut self, encoded: &[u8]) {
+        for pair in encoded.chunks_exact(2) {
+            let message = match pair[0] {
+                0 => LinkMessage::Data(pair[1]),
+                1 => LinkMessage::Reply(pair[1]),
+                _ => continue,
+            };
+            on!(self.machine_mut(), gb => gb.receive_link_message(message));
         }
     }
 
@@ -619,6 +653,16 @@ mod tests {
         emulator.set_breakpoints(&[], &[]);
         emulator.run_frame();
         assert_eq!(emulator.take_breakpoint_hit(), None);
+    }
+
+    #[test]
+    fn link_messages_round_trip_through_their_byte_encoding() {
+        let mut emulator = Emulator::demo();
+        emulator.set_linked(true);
+        assert!(emulator.take_link_messages().is_empty());
+        // Unknown kinds and odd lengths are ignored rather than panicking.
+        emulator.receive_link_messages(&[0, 0x42, 7, 1, 1]);
+        emulator.set_linked(false);
     }
 
     #[test]
