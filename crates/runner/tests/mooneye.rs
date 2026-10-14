@@ -4,7 +4,8 @@
 //!
 //! Only tests that already pass are listed, as a guard against regressions.
 //! Of the rest, most target other console models (DMG0, MGB, SGB), and a
-//! few PPU ones need pixel-level timing that the line renderer does not have.
+//! few PPU ones need timing finer than M-cycles (the LCD switching on, and
+//! when LY changes relative to the HBlank interrupt).
 
 use glassbit_runner::assert_rom_passes;
 
@@ -221,7 +222,7 @@ mod oam_dma {
 }
 
 mod ppu {
-    use super::passes;
+    use super::{assert_rom_passes, passes};
 
     #[test]
     fn intr_1_2_timing_gs() {
@@ -236,6 +237,16 @@ mod ppu {
     #[test]
     fn intr_2_mode0_timing() {
         passes("ppu/intr_2_mode0_timing.gb");
+    }
+
+    /// About a hundred sprite layouts, each lengthening mode 3 by a
+    /// different number of dots. It takes a few seconds of emulated time.
+    #[test]
+    fn intr_2_mode0_timing_sprites() {
+        assert_rom_passes(
+            "mooneye-test-suite/acceptance/ppu/intr_2_mode0_timing_sprites.gb",
+            600,
+        );
     }
 
     #[test]
