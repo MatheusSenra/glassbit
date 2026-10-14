@@ -140,3 +140,90 @@ mod mbc5 {
         passes("rom_64Mb.gb");
     }
 }
+
+/// Mooneye's `emulator-only/mbc2`.
+mod mbc2 {
+    use super::assert_rom_passes;
+
+    fn passes(name: &str) {
+        assert_rom_passes(
+            &format!("mooneye-test-suite/emulator-only/mbc2/{name}"),
+            600,
+        );
+    }
+
+    #[test]
+    fn bits_ramg() {
+        passes("bits_ramg.gb");
+    }
+
+    #[test]
+    fn bits_romb() {
+        passes("bits_romb.gb");
+    }
+
+    #[test]
+    fn bits_unused() {
+        passes("bits_unused.gb");
+    }
+
+    #[test]
+    fn ram() {
+        passes("ram.gb");
+    }
+
+    #[test]
+    fn rom_512kb() {
+        passes("rom_512kb.gb");
+    }
+
+    #[test]
+    fn rom_1mb() {
+        passes("rom_1Mb.gb");
+    }
+
+    #[test]
+    fn rom_2mb() {
+        passes("rom_2Mb.gb");
+    }
+}
+
+/// rtc3test: the MBC3 clock, timed against the Game Boy's own timer. Each
+/// subtest is chosen from a menu with the buttons and draws PASS or FAIL
+/// for every check; the screen must match the reference. The ROM supports
+/// the Color, so the Color references apply.
+mod rtc3test {
+    use glassbit_runner::assert_scripted_screen_matches;
+
+    const ROM: &str = "rtc3test/rtc3test.gb";
+
+    #[test]
+    fn basic_tests() {
+        assert_scripted_screen_matches(
+            ROM,
+            "a@30-36",
+            900,
+            "rtc3test/rtc3test-basic-tests-cgb.png",
+        );
+    }
+
+    #[test]
+    fn range_tests() {
+        assert_scripted_screen_matches(
+            ROM,
+            "down@30-36,a@50-56",
+            700,
+            "rtc3test/rtc3test-range-tests-cgb.png",
+        );
+    }
+
+    #[test]
+    fn sub_second_writes() {
+        assert_scripted_screen_matches(
+            ROM,
+            "down@30-36,down@50-56,a@70-76",
+            1800,
+            "rtc3test/rtc3test-sub-second-writes-cgb.png",
+        );
+    }
+}

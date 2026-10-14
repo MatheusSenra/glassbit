@@ -219,6 +219,43 @@ pub fn assert_screen_matches(rom: &str, reference: &str, max_frames: u32) {
     }
 }
 
+/// Runs a ROM for `frames` frames while holding buttons as `presses` says
+/// (see [`recording::parse_presses`]), and returns the final screen as RGB.
+pub fn run_scripted(
+    rom: &[u8],
+    frames: u32,
+    presses: &[recording::Press],
+) -> Result<Vec<screenshot::Rgb>, CartridgeError> {
+    let mut gb = GameBoy::new(rom)?;
+    for frame in 0..frames {
+        for press in presses {
+            if frame == press.from {
+                gb.set_button(press.button, true);
+            } else if frame == press.until {
+                gb.set_button(press.button, false);
+            }
+        }
+        gb.run_frame();
+    }
+    Ok(gb.rgb_framebuffer())
+}
+
+/// Like [`assert_screen_matches`] for a ROM that needs buttons pressed:
+/// runs it for `frames` frames with `presses` and compares the last screen.
+pub fn assert_scripted_screen_matches(rom: &str, presses: &str, frames: u32, reference: &str) {
+    let Some(dir) = test_roms_dir() else { return };
+    let path = dir.join(rom);
+    let image = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let presses = recording::parse_presses(presses).unwrap_or_else(|e| panic!("{e}"));
+    let actual = run_scripted(&image, frames, &presses).unwrap_or_else(|e| panic!("{rom}: {e}"));
+    let expected =
+        screenshot::load(&dir.join(reference)).unwrap_or_else(|e| panic!("{reference}: {e}"));
+    let (differing, first) = screenshot::compare(&actual, &expected);
+    if let Some((x, y)) = first {
+        panic!("{rom}: {differing} pixels differ from {reference}, first at ({x}, {y})");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
