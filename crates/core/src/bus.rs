@@ -52,8 +52,28 @@ const HDMA4: u16 = 0xFF54;
 const HDMA5: u16 = 0xFF55;
 /// Selects the work RAM bank seen at 0xD000-0xDFFF.
 const SVBK: u16 = 0xFF70;
+// Undocumented Color registers: FF72-FF73 are plain storage, FF74 too but
+// only in color mode, FF75 keeps bits 4-6, and FF76-FF77 read the sound
+// channels' current output (not modeled: they read 0).
+const FF72: u16 = 0xFF72;
+const FF73: u16 = 0xFF73;
+const FF74: u16 = 0xFF74;
+const FF75: u16 = 0xFF75;
+const PCM12: u16 = 0xFF76;
+const PCM34: u16 = 0xFF77;
 /// VRAM DMA moves 16 bytes per block.
 const HDMA_BLOCK: u16 = 16;
+
+/// The console being emulated, and for a Game Boy Color the mode its boot
+/// ROM left it in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hardware {
+    Dmg,
+    /// A Game Boy Color running a game made for it.
+    Cgb,
+    /// A Game Boy Color running a game made for the DMG.
+    CgbCompat,
+}
 /// A general-purpose VRAM DMA keeps the CPU waiting this many M-cycles per
 /// block at normal speed (twice as many at double speed).
 const GDMA_CYCLES_PER_BLOCK: u32 = 8;
@@ -120,6 +140,9 @@ pub struct Bus<O: Observer = NullObserver> {
     clock_cycles: u64,
     /// Game Boy Color mode.
     cgb: bool,
+    /// A Game Boy Color running a DMG game: it behaves like a DMG except
+    /// for the colors and a few registers.
+    compat: bool,
     color: ColorState,
     pub observer: O,
 }
@@ -127,24 +150,42 @@ pub struct Bus<O: Observer = NullObserver> {
 impl<O: Observer> Bus<O> {
     /// Creates a DMG bus in the post-boot state with `cartridge` inserted.
     pub fn new(cartridge: Cartridge, observer: O) -> Self {
-        Self::new_model(cartridge, observer, false)
+        Self::new_model(cartridge, observer, Hardware::Dmg)
     }
 
-    /// Creates a bus in the post-boot state of a DMG or, with `cgb`, of a
-    /// Game Boy Color running a color game.
-    pub fn new_model(cartridge: Cartridge, observer: O, cgb: bool) -> Self {
+    /// Creates a bus in the post-boot state of the given hardware.
+    pub fn new_model(cartridge: Cartridge, observer: O, hardware: Hardware) -> Self {
+        let cgb = hardware == Hardware::Cgb;
+        let compat = hardware == Hardware::CgbCompat;
+        let mut io = [0xFF; IO_SIZE];
+        let mut joypad = Joypad::new();
+        if cgb || compat {
+            // The Color's boot ROM leaves neither button group selected.
+            joypad.write(0x30);
+            // Registers that only exist on the Color, cleared at power on.
+            for addr in [FF72, FF73, FF74, FF75] {
+                io[(addr - 0xFF00) as usize] = 0x00;
+            }
+        }
         Self {
             cartridge,
             wram: vec![0; WRAM_SIZE].into_boxed_slice(),
-            io: [0xFF; IO_SIZE],
+            io,
             hram: [0; HRAM_SIZE],
             // The boot ROM leaves a VBlank request behind.
             interrupt_flag: interrupts::VBLANK,
             interrupt_enable: 0x00,
-            joypad: Joypad::new(),
+            joypad,
             serial: Serial::new(),
-            timer: Timer::new(),
-            ppu: if cgb { Ppu::new_cgb() } else { Ppu::new() },
+            timer: match hardware {
+                Hardware::CgbCompat => Timer::with_counter(timer::POST_BOOT_COUNTER_COMPAT),
+                _ => Timer::new(),
+            },
+            ppu: match hardware {
+                Hardware::Dmg => Ppu::new(),
+                Hardware::Cgb => Ppu::new_cgb(),
+                Hardware::CgbCompat => Ppu::new_compat(),
+            },
             apu: Apu::new(),
             dma_page: 0xFF,
             dma_delay: 0,
@@ -155,6 +196,7 @@ impl<O: Observer> Bus<O> {
             cycles: 0,
             clock_cycles: 0,
             cgb,
+            compat,
             color: ColorState::default(),
             observer,
         }
@@ -163,6 +205,23 @@ impl<O: Observer> Bus<O> {
     /// Whether this is a Game Boy Color running in color mode.
     pub fn is_cgb(&self) -> bool {
         self.cgb
+    }
+
+    /// The hardware being emulated.
+    pub fn hardware(&self) -> Hardware {
+        match (self.cgb, self.compat) {
+            (true, _) => Hardware::Cgb,
+            (false, true) => Hardware::CgbCompat,
+            (false, false) => Hardware::Dmg,
+        }
+    }
+
+    /// The Color's palette RAM, in compatibility mode only reachable from
+    /// outside: replaces the three palettes DMG shades are shown with.
+    pub fn set_compat_palettes(&mut self, palettes: &[[u16; 4]; 3]) {
+        if self.compat {
+            self.ppu.set_compat_palettes(palettes);
+        }
     }
 
     /// Whether the CPU runs at double speed (Game Boy Color only).
@@ -195,6 +254,7 @@ impl<O: Observer> Bus<O> {
             cycles: self.cycles,
             clock_cycles: self.clock_cycles,
             cgb: self.cgb,
+            compat: self.compat,
             color: self.color,
             observer,
         }
@@ -393,6 +453,29 @@ impl<O: Observer> Bus<O> {
         }
     }
 
+    fn read_undocumented(&self, addr: u16) -> u8 {
+        let stored = self.io[(addr - 0xFF00) as usize];
+        match addr {
+            _ if !self.cgb && !self.compat => 0xFF,
+            FF72 | FF73 => stored,
+            FF74 if self.cgb => stored,
+            FF75 => 0x8F | stored,
+            PCM12 | PCM34 => 0x00,
+            _ => 0xFF,
+        }
+    }
+
+    fn write_undocumented(&mut self, addr: u16, value: u8) {
+        let stored = &mut self.io[(addr - 0xFF00) as usize];
+        match addr {
+            _ if !self.cgb && !self.compat => {}
+            FF72 | FF73 => *stored = value,
+            FF74 if self.cgb => *stored = value,
+            FF75 => *stored = value & 0x70,
+            _ => {}
+        }
+    }
+
     fn read_color_register(&self, addr: u16) -> u8 {
         match addr {
             KEY1 => {
@@ -513,7 +596,10 @@ impl<O: Observer> Bus<O> {
             KEY1 | ppu::VBK | HDMA1..=HDMA5 | ppu::BCPS..=ppu::OPRI | SVBK if self.cgb => {
                 self.read_color_register(addr)
             }
-            0xFF01..=0xFF7F => self.io[(addr - 0xFF00) as usize],
+            ppu::VBK | ppu::BCPS..=ppu::OPRI if self.compat => self.ppu.read_register(addr),
+            FF72..=PCM34 => self.read_undocumented(addr),
+            // Registers that do not exist read all ones.
+            0xFF01..=0xFF7F => 0xFF,
             0xFF80..=0xFFFE => self.hram[(addr - 0xFF80) as usize],
             interrupts::IE => self.interrupt_enable,
         }
@@ -561,7 +647,10 @@ impl<O: Observer> Bus<O> {
                     KEY1 | ppu::VBK | HDMA1..=HDMA5 | ppu::BCPS..=ppu::OPRI | SVBK if self.cgb => {
                         self.write_color_register(addr, value)
                     }
-                    _ => self.io[(addr - 0xFF00) as usize] = value,
+                    // Locked by the boot ROM in compatibility mode.
+                    ppu::VBK | ppu::BCPS..=ppu::OPRI if self.compat => {}
+                    FF72..=PCM34 => self.write_undocumented(addr, value),
+                    _ => {}
                 }
                 self.observer.io_write(addr, old, value);
             }
@@ -822,7 +911,7 @@ mod tests {
     fn cgb_bus() -> Bus {
         let rom = RomBuilder::new().build();
         let cartridge = Cartridge::new(&rom).unwrap_or_else(|e| panic!("{e}"));
-        Bus::new_model(cartridge, NullObserver, true)
+        Bus::new_model(cartridge, NullObserver, Hardware::Cgb)
     }
 
     #[test]

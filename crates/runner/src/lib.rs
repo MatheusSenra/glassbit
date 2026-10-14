@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use glassbit_core::cartridge::CartridgeError;
 use glassbit_core::cpu::Registers;
-use glassbit_core::{GameBoy, CYCLES_PER_FRAME};
+use glassbit_core::{GameBoy, Model, CYCLES_PER_FRAME};
 
 /// How a test ROM run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,9 +51,22 @@ const VERDICT_TAIL_FRAMES: u64 = 30;
 
 const LD_B_B: u8 = 0x40;
 
+/// Powers on the console a ROM asks for, or `model` when given (a DMG
+/// game on a Game Boy Color runs in compatibility mode).
+pub fn boot(rom: &[u8], model: Option<Model>) -> Result<GameBoy, CartridgeError> {
+    match model {
+        Some(model) => GameBoy::new_as(rom, model),
+        None => GameBoy::new(rom),
+    }
+}
+
 /// Runs a test ROM until it reports a verdict or `max_frames` go by.
-pub fn run_test(rom: &[u8], max_frames: u32) -> Result<TestRun, CartridgeError> {
-    let mut gb = GameBoy::new(rom)?;
+pub fn run_test(
+    rom: &[u8],
+    model: Option<Model>,
+    max_frames: u32,
+) -> Result<TestRun, CartridgeError> {
+    let mut gb = boot(rom, model)?;
     let mut output = String::new();
     let mut outcome = Outcome::Timeout;
     let mut deadline = max_frames as u64 * CYCLES_PER_FRAME;
@@ -111,9 +124,10 @@ pub fn run_test(rom: &[u8], max_frames: u32) -> Result<TestRun, CartridgeError> 
 /// and returns the finished screen as RGB.
 pub fn run_screen_test(
     rom: &[u8],
+    model: Option<Model>,
     max_frames: u32,
 ) -> Result<Vec<screenshot::Rgb>, CartridgeError> {
-    let mut gb = GameBoy::new(rom)?;
+    let mut gb = boot(rom, model)?;
     let deadline = max_frames as u64 * CYCLES_PER_FRAME;
     while gb.cycles() < deadline {
         let breakpoint = !gb.cpu().halted && gb.peek(gb.cpu().regs.pc) == LD_B_B;
@@ -183,10 +197,15 @@ pub fn test_roms_dir() -> Option<PathBuf> {
 /// Runs the ROM at `relative` (inside the test ROM directory) and panics
 /// unless it passes. Does nothing when the ROMs have not been downloaded.
 pub fn assert_rom_passes(relative: &str, max_frames: u32) {
+    assert_rom_passes_on(None, relative, max_frames);
+}
+
+/// Like [`assert_rom_passes`], on the given console.
+pub fn assert_rom_passes_on(model: Option<Model>, relative: &str, max_frames: u32) {
     let Some(dir) = test_roms_dir() else { return };
     let path = dir.join(relative);
     let rom = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let run = run_test(&rom, max_frames).unwrap_or_else(|e| panic!("{relative}: {e}"));
+    let run = run_test(&rom, model, max_frames).unwrap_or_else(|e| panic!("{relative}: {e}"));
     assert_eq!(
         run.outcome,
         Outcome::Passed,
@@ -200,10 +219,16 @@ pub fn assert_rom_passes(relative: &str, max_frames: u32) {
 /// the PNG at `reference` exactly (both paths inside the test ROM directory).
 /// Does nothing when the ROMs have not been downloaded.
 pub fn assert_screen_matches(rom: &str, reference: &str, max_frames: u32) {
+    assert_screen_matches_on(None, rom, reference, max_frames);
+}
+
+/// Like [`assert_screen_matches`], on the given console.
+pub fn assert_screen_matches_on(model: Option<Model>, rom: &str, reference: &str, max_frames: u32) {
     let Some(dir) = test_roms_dir() else { return };
     let path = dir.join(rom);
     let image = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let actual = run_screen_test(&image, max_frames).unwrap_or_else(|e| panic!("{rom}: {e}"));
+    let actual =
+        run_screen_test(&image, model, max_frames).unwrap_or_else(|e| panic!("{rom}: {e}"));
     let expected =
         screenshot::load(&dir.join(reference)).unwrap_or_else(|e| panic!("{reference}: {e}"));
 
@@ -223,10 +248,11 @@ pub fn assert_screen_matches(rom: &str, reference: &str, max_frames: u32) {
 /// (see [`recording::parse_presses`]), and returns the final screen as RGB.
 pub fn run_scripted(
     rom: &[u8],
+    model: Option<Model>,
     frames: u32,
     presses: &[recording::Press],
 ) -> Result<Vec<screenshot::Rgb>, CartridgeError> {
-    let mut gb = GameBoy::new(rom)?;
+    let mut gb = boot(rom, model)?;
     for frame in 0..frames {
         for press in presses {
             if frame == press.from {
@@ -247,7 +273,8 @@ pub fn assert_scripted_screen_matches(rom: &str, presses: &str, frames: u32, ref
     let path = dir.join(rom);
     let image = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let presses = recording::parse_presses(presses).unwrap_or_else(|e| panic!("{e}"));
-    let actual = run_scripted(&image, frames, &presses).unwrap_or_else(|e| panic!("{rom}: {e}"));
+    let actual =
+        run_scripted(&image, None, frames, &presses).unwrap_or_else(|e| panic!("{rom}: {e}"));
     let expected =
         screenshot::load(&dir.join(reference)).unwrap_or_else(|e| panic!("{reference}: {e}"));
     let (differing, first) = screenshot::compare(&actual, &expected);

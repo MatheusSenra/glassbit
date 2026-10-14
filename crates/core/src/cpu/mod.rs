@@ -85,6 +85,26 @@ impl Cpu {
         }
     }
 
+    /// The registers a Game Boy Color leaves behind when it starts a game
+    /// made for the DMG, in compatibility mode. Values from Mooneye's
+    /// `boot_regs-cgb`; with some licensed games the boot ROM leaves other
+    /// values in B and HL, which games do not rely on.
+    pub fn post_boot_compat() -> Self {
+        let mut regs = Registers {
+            a: 0x11,
+            sp: 0xFFFE,
+            pc: 0x0100,
+            ..Registers::default()
+        };
+        regs.set_flags(true, false, false, false);
+        regs.set_de(0x0008);
+        regs.set_hl(0x007C);
+        Self {
+            regs,
+            ..Self::default()
+        }
+    }
+
     /// Executes one instruction, serves one interrupt, or sleeps for one
     /// M-cycle.
     pub fn step<B: CpuBus>(&mut self, bus: &mut B) {

@@ -96,6 +96,40 @@ const ATTR_PRIORITY: u8 = 0x80;
 
 /// RGB555 white, the color of a blank screen.
 const WHITE: u16 = 0x7FFF;
+
+/// A 24-bit `0xRRGGBB` color as RGB555 (red in the lowest bits).
+pub const fn rgb555(rgb: u32) -> u16 {
+    let red = (rgb >> 19 & 0x1F) as u16;
+    let green = (rgb >> 11 & 0x1F) as u16;
+    let blue = (rgb >> 3 & 0x1F) as u16;
+    red | green << 5 | blue << 10
+}
+
+/// The colors a Game Boy Color gives a DMG game in compatibility mode when
+/// it does not recognize the title: one palette for the background and two
+/// for sprites (OBP0 and OBP1), each from the lightest shade to the
+/// darkest. The real boot ROM picks other palettes for many games by
+/// hashing the title; Glassbit does not run it, so this is the default.
+pub const DEFAULT_COMPAT_PALETTES: [[u16; 4]; 3] = [
+    [
+        rgb555(0xFFFFFF),
+        rgb555(0x7BFF31),
+        rgb555(0x0063C6),
+        rgb555(0x000000),
+    ],
+    [
+        rgb555(0xFFFFFF),
+        rgb555(0xFF8484),
+        rgb555(0x943939),
+        rgb555(0x000000),
+    ],
+    [
+        rgb555(0xFFFFFF),
+        rgb555(0xFF8484),
+        rgb555(0x943939),
+        rgb555(0x000000),
+    ],
+];
 const OBJ_FLIP_X: u8 = 0x20;
 const OBJ_FLIP_Y: u8 = 0x40;
 const OBJ_BEHIND_BG: u8 = 0x80;
@@ -258,6 +292,9 @@ pub struct Ppu {
     framebuffer: Box<[u8]>,
     /// Game Boy Color mode: attributes, banks and color palettes.
     cgb: bool,
+    /// A Game Boy Color running a DMG game: drawn like a DMG, but every
+    /// shade goes through the color palettes the boot ROM set up.
+    compat: bool,
     /// One RGB555 color per pixel. CGB mode only.
     color_framebuffer: Box<[u16]>,
     vram_bank: u8,
@@ -344,6 +381,7 @@ impl Ppu {
             frame_ready: false,
             framebuffer: vec![0; SCREEN_WIDTH * SCREEN_HEIGHT].into_boxed_slice(),
             cgb: false,
+            compat: false,
             color_framebuffer: vec![WHITE; SCREEN_WIDTH * SCREEN_HEIGHT].into_boxed_slice(),
             vram_bank: 0,
             bg_palettes: [0xFF; PALETTE_RAM_SIZE],
@@ -385,12 +423,44 @@ impl Ppu {
         }
     }
 
+    /// A PPU of a Game Boy Color in compatibility mode, in the state its
+    /// boot ROM leaves: the default colors in background palette 0 and
+    /// sprite palettes 0 and 1, and the palette index registers just past
+    /// them.
+    pub fn new_compat() -> Self {
+        let mut ppu = Self {
+            compat: true,
+            ..Self::new()
+        };
+        ppu.set_compat_palettes(&DEFAULT_COMPAT_PALETTES);
+        ppu.bcps = 0x88;
+        ppu.ocps = 0x90;
+        ppu
+    }
+
+    /// In compatibility mode, replaces the background palette and the two
+    /// sprite palettes (RGB555 colors, lightest shade first).
+    pub fn set_compat_palettes(&mut self, palettes: &[[u16; 4]; 3]) {
+        let [background, obp0, obp1] = palettes;
+        // Each palette is 8 bytes: four little-endian colors.
+        let bytes = |colors: &[u16; 4]| colors.map(|color| (color & 0x7FFF).to_le_bytes());
+        self.bg_palettes[..8].copy_from_slice(bytes(background).as_flattened());
+        self.obj_palettes[..8].copy_from_slice(bytes(obp0).as_flattened());
+        self.obj_palettes[8..16].copy_from_slice(bytes(obp1).as_flattened());
+    }
+
+    /// Whether this is a Game Boy Color running a DMG game.
+    pub fn is_compat(&self) -> bool {
+        self.compat
+    }
+
     /// Whether this PPU works in Game Boy Color mode.
     pub fn is_cgb(&self) -> bool {
         self.cgb
     }
 
-    /// The screen in CGB mode: one RGB555 color per pixel, row by row.
+    /// The screen of a Game Boy Color (in either mode): one RGB555 color
+    /// per pixel, row by row.
     pub fn color_framebuffer(&self) -> &[u16] {
         &self.color_framebuffer
     }
@@ -560,6 +630,11 @@ impl Ppu {
             OBP1 => self.obp1,
             WY => self.wy,
             WX => self.wx,
+            // In compatibility mode the boot ROM locked the Color
+            // registers; a few still read back what it left.
+            VBK if self.compat => 0xFE,
+            BCPS if self.compat => self.bcps | 0x40,
+            OCPS if self.compat => self.ocps | 0x40,
             // The Color registers do not exist in DMG mode.
             _ if !self.cgb => 0xFF,
             VBK => 0xFE | self.vram_bank,
@@ -1012,12 +1087,21 @@ impl Ppu {
             };
             return;
         }
-        self.framebuffer[index] = match pixel.source {
+        let shade = match pixel.source {
             Source::Sprite(0) => shade(self.obp0, pixel.color),
             Source::Sprite(_) => shade(self.obp1, pixel.color),
             Source::Background(_) => shade(self.bgp | self.old_bgp, pixel.color),
             Source::Blank => 0,
         };
+        self.framebuffer[index] = shade;
+        if self.compat {
+            // The shade picks a color from the palettes the boot ROM set.
+            self.color_framebuffer[index] = match pixel.source {
+                Source::Sprite(palette) => cgb_color(&self.obj_palettes, palette, shade),
+                Source::Background(_) => cgb_color(&self.bg_palettes, 0, shade),
+                Source::Blank => WHITE,
+            };
+        }
     }
 
     /// Offset in VRAM of the 32x32 tile map selected by an LCDC bit.
@@ -1082,6 +1166,7 @@ impl Ppu {
         w.bool(self.frame_ready);
         w.bytes(&self.framebuffer);
         w.bool(self.cgb);
+        w.bool(self.compat);
         for &color in self.color_framebuffer.iter() {
             w.u16(color);
         }
@@ -1185,7 +1270,7 @@ impl Ppu {
         self.frame_ready = r.bool()?;
         r.bytes(&mut self.framebuffer)?;
         // A state from a console in the other mode cannot be continued here.
-        if r.bool()? != self.cgb {
+        if r.bool()? != self.cgb || r.bool()? != self.compat {
             return Err(StateError::Corrupt);
         }
         for color in self.color_framebuffer.iter_mut() {

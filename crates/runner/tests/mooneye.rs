@@ -182,6 +182,11 @@ mod bits {
     fn reg_f() {
         passes("bits/reg_f.gb");
     }
+
+    #[test]
+    fn unused_hwio_gs() {
+        passes("bits/unused_hwio-GS.gb");
+    }
 }
 
 mod instr {
@@ -336,5 +341,40 @@ mod timer {
     #[test]
     fn tma_write_reloading() {
         passes("timer/tma_write_reloading.gb");
+    }
+}
+
+/// Mooneye's `misc` tests for the Game Boy Color. They are DMG cartridges,
+/// so the Color runs them in compatibility mode.
+mod compatibility_mode {
+    use glassbit_core::Model;
+    use glassbit_runner::assert_rom_passes_on;
+
+    fn passes(name: &str) {
+        assert_rom_passes_on(
+            Some(Model::Cgb),
+            &format!("mooneye-test-suite/misc/{name}"),
+            super::MAX_FRAMES,
+        );
+    }
+
+    #[test]
+    fn boot_div_cgb_abcde() {
+        passes("boot_div-cgbABCDE.gb");
+    }
+
+    #[test]
+    fn boot_hwio_c() {
+        passes("boot_hwio-C.gb");
+    }
+
+    #[test]
+    fn boot_regs_cgb() {
+        passes("boot_regs-cgb.gb");
+    }
+
+    #[test]
+    fn unused_hwio_c() {
+        passes("bits/unused_hwio-C.gb");
     }
 }

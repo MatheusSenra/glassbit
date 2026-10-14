@@ -25,6 +25,10 @@ pub const TAC: u16 = 0xFF07;
 /// `boot_div-dmgABCmgb`, which passes with this value alone.
 const POST_BOOT_COUNTER: u16 = 0xABC8;
 
+/// The same on a Game Boy Color starting a DMG game, whose boot ROM takes
+/// longer. Found with Mooneye's `boot_div-cgbABCDE`.
+pub const POST_BOOT_COUNTER_COMPAT: u16 = 0x2674;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timer {
     /// Counts clock ticks (T-cycles), so it advances by 4 per M-cycle.
@@ -42,8 +46,13 @@ pub struct Timer {
 impl Timer {
     /// A timer in the post-boot state.
     pub fn new() -> Self {
+        Self::with_counter(POST_BOOT_COUNTER)
+    }
+
+    /// A timer whose internal counter starts at `counter`.
+    pub fn with_counter(counter: u16) -> Self {
         Self {
-            counter: POST_BOOT_COUNTER,
+            counter,
             tima: 0x00,
             tma: 0x00,
             tac: 0x00,

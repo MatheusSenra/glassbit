@@ -7,6 +7,9 @@
 //! turns the run into a visual test: the verdict is whether the screen
 //! matches that image pixel for pixel.
 //!
+//! `--model dmg` or `--model cgb` chooses the console instead of the one the
+//! cartridge asks for; a DMG game on `cgb` runs in compatibility mode.
+//!
 //! `--gif out.gif` records `--frames` frames to an animation instead of
 //! looking for a verdict. While recording, `--press
 //! "start@70-75,left@140-146"` holds buttons during the given frames, and
@@ -16,14 +19,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use glassbit_core::cartridge::Header;
-use glassbit_core::GameBoy;
+use glassbit_core::Model;
 use glassbit_runner::recording::{parse_presses, record_gif};
-use glassbit_runner::{run_screen_test, run_test, screenshot, Outcome};
+use glassbit_runner::{boot, run_screen_test, run_test, screenshot, Outcome};
 
 /// About two minutes of emulated time.
 const DEFAULT_MAX_FRAMES: u32 = 7200;
 
-const USAGE: &str = "usage: glassbit-runner <rom.gb> [--frames N] [--screenshot out.png] [--reference ref.png] [--gif out.gif] [--press button@from-until,...]";
+const USAGE: &str = "usage: glassbit-runner <rom.gb> [--frames N] [--screenshot out.png] [--reference ref.png] [--gif out.gif] [--press button@from-until,...] [--model dmg|cgb]";
 
 fn main() -> ExitCode {
     let mut path = None;
@@ -32,9 +35,10 @@ fn main() -> ExitCode {
     let mut reference_path: Option<PathBuf> = None;
     let mut gif_path: Option<PathBuf> = None;
     let mut presses = Vec::new();
+    let mut model = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if ["--screenshot", "--reference", "--gif", "--press"].contains(&arg.as_str()) {
+        if ["--screenshot", "--reference", "--gif", "--press", "--model"].contains(&arg.as_str()) {
             let Some(value) = args.next() else {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
@@ -43,6 +47,14 @@ fn main() -> ExitCode {
                 "--screenshot" => screenshot_path = Some(value.into()),
                 "--reference" => reference_path = Some(value.into()),
                 "--gif" => gif_path = Some(value.into()),
+                "--model" => match value.as_str() {
+                    "dmg" => model = Some(Model::Dmg),
+                    "cgb" => model = Some(Model::Cgb),
+                    _ => {
+                        eprintln!("error: --model must be dmg or cgb");
+                        return ExitCode::from(2);
+                    }
+                },
                 _ => match parse_presses(&value) {
                     Ok(parsed) => presses = parsed,
                     Err(err) => {
@@ -90,7 +102,7 @@ fn main() -> ExitCode {
     }
 
     if let Some(gif) = gif_path {
-        let mut gb = match GameBoy::new(&rom) {
+        let mut gb = match boot(&rom, model) {
             Ok(gb) => gb,
             Err(err) => {
                 eprintln!("error: {path}: {err}");
@@ -114,7 +126,7 @@ fn main() -> ExitCode {
     }
 
     if let Some(reference) = reference_path {
-        let screen = match run_screen_test(&rom, max_frames) {
+        let screen = match run_screen_test(&rom, model, max_frames) {
             Ok(screen) => screen,
             Err(err) => {
                 eprintln!("error: {path}: {err}");
@@ -143,7 +155,7 @@ fn main() -> ExitCode {
         };
     }
 
-    let run = match run_test(&rom, max_frames) {
+    let run = match run_test(&rom, model, max_frames) {
         Ok(run) => run,
         Err(err) => {
             eprintln!("error: {path}: {err}");

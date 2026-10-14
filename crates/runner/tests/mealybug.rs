@@ -10,7 +10,8 @@
 //!
 //! <https://github.com/mattcurrie/mealybug-tearoom-tests>
 
-use glassbit_runner::assert_screen_matches;
+use glassbit_core::Model;
+use glassbit_runner::{assert_screen_matches, assert_screen_matches_on};
 
 fn matches(name: &str) {
     assert_screen_matches(
@@ -43,4 +44,16 @@ fn m3_scx_high_5_bits() {
 #[test]
 fn m3_wx_6_change() {
     matches("m3_wx_6_change");
+}
+
+/// The same test on a Game Boy Color, which runs it in compatibility mode:
+/// its reference shows the colors the Color gives DMG games by default.
+#[test]
+fn m2_win_en_toggle_in_compatibility_mode() {
+    assert_screen_matches_on(
+        Some(Model::Cgb),
+        "mealybug-tearoom-tests/ppu/m2_win_en_toggle.gb",
+        "mealybug-tearoom-tests/ppu/m2_win_en_toggle_cgb_c.png",
+        120,
+    );
 }

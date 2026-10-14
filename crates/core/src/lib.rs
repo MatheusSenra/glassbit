@@ -18,7 +18,7 @@ pub mod serial;
 pub mod state;
 pub mod timer;
 
-use bus::Bus;
+use bus::{Bus, Hardware};
 use cartridge::{Cartridge, CartridgeError, CgbSupport, Header};
 use cpu::Cpu;
 pub use joypad::Button;
@@ -78,8 +78,9 @@ impl GameBoy {
     }
 
     /// Like [`GameBoy::new`], choosing the console. A game made only for the
-    /// DMG always runs on a DMG: the compatibility mode of the Color, which
-    /// adds colors to old games, is not emulated.
+    /// DMG runs on a Game Boy Color in compatibility mode, which shows it
+    /// in colors (see [`GameBoy::set_compat_palettes`]); a color game runs
+    /// on a DMG as well as it can.
     pub fn new_as(rom: &[u8], model: Model) -> Result<Self, CartridgeError> {
         Self::with_observer_as(rom, NullObserver, Some(model))
     }
@@ -98,26 +99,43 @@ impl<O: Observer> GameBoy<O> {
     ) -> Result<Self, CartridgeError> {
         let cartridge = Cartridge::new(rom)?;
         let wanted = Model::for_header(cartridge.header());
-        let cgb = wanted == Model::Cgb && model != Some(Model::Dmg);
-        let cpu = if cgb {
-            Cpu::post_boot_cgb()
-        } else {
-            Cpu::post_boot(cartridge.header().header_checksum)
+        let hardware = match (model.unwrap_or(wanted), wanted) {
+            (Model::Dmg, _) => Hardware::Dmg,
+            (Model::Cgb, Model::Cgb) => Hardware::Cgb,
+            (Model::Cgb, Model::Dmg) => Hardware::CgbCompat,
+        };
+        let cpu = match hardware {
+            Hardware::Dmg => Cpu::post_boot(cartridge.header().header_checksum),
+            Hardware::Cgb => Cpu::post_boot_cgb(),
+            Hardware::CgbCompat => Cpu::post_boot_compat(),
         };
         Ok(Self {
             cpu,
-            bus: Bus::new_model(cartridge, observer, cgb),
+            bus: Bus::new_model(cartridge, observer, hardware),
             audio: Vec::new(),
         })
     }
 
     /// The console being emulated.
     pub fn model(&self) -> Model {
-        if self.bus.is_cgb() {
-            Model::Cgb
-        } else {
-            Model::Dmg
+        match self.bus.hardware() {
+            Hardware::Dmg => Model::Dmg,
+            Hardware::Cgb | Hardware::CgbCompat => Model::Cgb,
         }
+    }
+
+    /// Whether a Game Boy Color is running a DMG game in compatibility
+    /// mode: drawn like on a DMG, but in colors.
+    pub fn compatibility_mode(&self) -> bool {
+        self.bus.hardware() == Hardware::CgbCompat
+    }
+
+    /// In compatibility mode, sets the colors DMG shades are shown with:
+    /// the background palette, then the sprite palettes for OBP0 and OBP1,
+    /// each four RGB555 colors from the lightest shade to the darkest. The
+    /// default is [`ppu::DEFAULT_COMPAT_PALETTES`]. Does nothing otherwise.
+    pub fn set_compat_palettes(&mut self, palettes: &[[u16; 4]; 3]) {
+        self.bus.set_compat_palettes(palettes);
     }
 
     /// The header of the inserted cartridge.
@@ -255,16 +273,17 @@ impl<O: Observer> GameBoy<O> {
         self.bus.ppu().framebuffer()
     }
 
-    /// The screen of a Game Boy Color in color mode: one RGB555 color per
-    /// pixel (5 bits each, red in the lowest bits), row by row.
+    /// The screen of a Game Boy Color, in color or compatibility mode: one
+    /// RGB555 color per pixel (5 bits each, red in the lowest bits), row by
+    /// row.
     pub fn color_framebuffer(&self) -> &[u16] {
         self.bus.ppu().color_framebuffer()
     }
 
-    /// On a Game Boy Color in color mode, its palette RAM: background
-    /// palettes, then sprite palettes (see [`ppu::Ppu::palette_ram`]).
+    /// On a Game Boy Color, its palette RAM: background palettes, then
+    /// sprite palettes (see [`ppu::Ppu::palette_ram`]).
     pub fn palette_ram(&self) -> Option<(&[u8], &[u8])> {
-        self.bus.is_cgb().then(|| self.bus.ppu().palette_ram())
+        (self.model() == Model::Cgb).then(|| self.bus.ppu().palette_ram())
     }
 
     /// The screen as 8-bit RGB, whichever the model: DMG shades become four
@@ -272,7 +291,7 @@ impl<O: Observer> GameBoy<O> {
     /// bits (`x << 3 | x >> 2`).
     pub fn rgb_framebuffer(&self) -> Vec<[u8; 3]> {
         const GRAYS: [u8; 4] = [0xFF, 0xAA, 0x55, 0x00];
-        if self.bus.is_cgb() {
+        if self.model() == Model::Cgb {
             let widen = |channel: u16| ((channel << 3) | (channel >> 2)) as u8;
             self.color_framebuffer()
                 .iter()
@@ -917,7 +936,33 @@ mod tests {
         assert_eq!(dmg.cpu().regs.a, 0x01);
 
         let old = GameBoy::new_as(&rom_running(&[]), Model::Cgb).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(old.model(), Model::Dmg, "no compatibility mode");
+        assert_eq!(old.model(), Model::Cgb);
+        assert!(old.compatibility_mode());
+        assert_eq!(old.cpu().regs.a, 0x11);
+        assert!(!gb.compatibility_mode() && !dmg.compatibility_mode());
+    }
+
+    #[test]
+    fn dmg_games_on_a_color_show_shades_through_its_palettes() {
+        // The post-boot screen is blank: every pixel is background color 0,
+        // which BGP (0xFC) makes the lightest shade.
+        let mut gb =
+            GameBoy::new_as(&rom_running(&[]), Model::Cgb).unwrap_or_else(|e| panic!("{e}"));
+        gb.run_frame();
+        gb.run_frame();
+        let lightest = ppu::DEFAULT_COMPAT_PALETTES[0][0];
+        assert!(gb
+            .color_framebuffer()
+            .iter()
+            .all(|&color| color == lightest));
+
+        let red = ppu::rgb555(0xFF0000);
+        gb.set_compat_palettes(&[[red; 4], [0; 4], [0; 4]]);
+        gb.run_frame();
+        assert_eq!(gb.rgb_framebuffer()[0], [0xFF, 0x00, 0x00]);
+        // The game cannot reach the palettes: the boot ROM locked them.
+        assert_eq!(gb.peek(0xFF69), 0xFF);
+        assert_eq!(gb.peek(0xFF68), 0xC8);
     }
 
     #[test]

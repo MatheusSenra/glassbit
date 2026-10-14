@@ -3,17 +3,22 @@
 //! part of the machine, so a field forgotten in the state shows up as a
 //! divergence in one of them.
 
-use glassbit_core::GameBoy;
-use glassbit_runner::test_roms_dir;
+use glassbit_core::Model;
+use glassbit_runner::{boot, test_roms_dir};
 
 /// Saves after `warm_up` frames, restores into a fresh console and checks
 /// that both stay identical for `compare` more frames.
 fn continues_identically(relative: &str, warm_up: u32, compare: u32) {
+    continues_identically_on(None, relative, warm_up, compare);
+}
+
+/// Like [`continues_identically`], on the given console.
+fn continues_identically_on(model: Option<Model>, relative: &str, warm_up: u32, compare: u32) {
     let Some(dir) = test_roms_dir() else { return };
     let path = dir.join(relative);
     let rom = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
 
-    let mut original = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{relative}: {e}"));
+    let mut original = boot(&rom, model).unwrap_or_else(|e| panic!("{relative}: {e}"));
     for _ in 0..warm_up {
         original.run_frame();
     }
@@ -26,7 +31,7 @@ fn continues_identically(relative: &str, warm_up: u32, compare: u32) {
     // What was printed before the save is not part of the state.
     original.take_serial_output();
 
-    let mut restored = GameBoy::new(&rom).unwrap_or_else(|e| panic!("{relative}: {e}"));
+    let mut restored = boot(&rom, model).unwrap_or_else(|e| panic!("{relative}: {e}"));
     restored
         .load_state(&state)
         .unwrap_or_else(|e| panic!("{relative}: {e}"));
@@ -45,7 +50,8 @@ fn continues_identically(relative: &str, warm_up: u32, compare: u32) {
             "{relative}: CPU, frame {frame}"
         );
         assert!(
-            restored.framebuffer() == original.framebuffer(),
+            restored.framebuffer() == original.framebuffer()
+                && restored.color_framebuffer() == original.color_framebuffer(),
             "{relative}: screen differs in frame {frame}"
         );
         assert!(
@@ -103,4 +109,10 @@ fn mbc5() {
 #[test]
 fn mbc3() {
     continues_identically("mbc3-tester/mbc3-tester.gb", 10, 40);
+}
+
+/// A DMG game on a Game Boy Color, in compatibility mode.
+#[test]
+fn compatibility_mode() {
+    continues_identically_on(Some(Model::Cgb), "dmg-acid2/dmg-acid2.gb", 10, 20);
 }
