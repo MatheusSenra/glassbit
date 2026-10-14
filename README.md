@@ -1,5 +1,3 @@
-<p align="center"><img src="assets/banner.webp" alt="Glassbit: transparent emulation" width="800"></p>
-
 # Glassbit
 
 [![CI](https://github.com/MatheusSenra/glassbit/actions/workflows/ci.yml/badge.svg)](https://github.com/MatheusSenra/glassbit/actions/workflows/ci.yml)
