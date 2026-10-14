@@ -104,11 +104,14 @@ function setSaveStatus(message) {
   showStatus();
 }
 
+// The current time in whole seconds since 1970, for cartridge clocks.
+const now = () => Math.floor(Date.now() / 1000);
+
 // Writes the battery save to IndexedDB if the game changed it.
 async function storeSave(target = emulator) {
   if (!target?.take_save_dirty()) return;
   try {
-    await writeSave(target.save_key(), target.save_data());
+    await writeSave(target.save_key(), target.save_data(now()));
     setSaveStatus(["save.stored", new Date().toLocaleTimeString()]);
   } catch (error) {
     setSaveStatus(["save.storeError", error.message ?? String(error)]);
@@ -130,7 +133,7 @@ async function start(newEmulator, message, { keepPreviousSave = true } = {}) {
   if (newEmulator.has_battery()) {
     try {
       const saved = await readSave(newEmulator.save_key());
-      if (saved) newEmulator.load_save(saved);
+      if (saved) newEmulator.load_save(saved, now());
       setSaveStatus([saved ? "save.restored" : "save.available"]);
     } catch (error) {
       setSaveStatus(["save.unavailable", error.message ?? String(error)]);
@@ -464,7 +467,7 @@ pauseButton.addEventListener("click", () => {
 
 // Downloads the cartridge RAM as a .sav file, the format most emulators use.
 function exportSave() {
-  const data = emulator?.save_data();
+  const data = emulator?.save_data(now());
   if (!data) {
     setSaveStatus(["save.noBattery"]);
     return;
@@ -490,12 +493,12 @@ async function importSave(file) {
   }
   try {
     const fresh = new Emulator(currentRom.bytes);
-    if (!fresh.load_save(new Uint8Array(await file.arrayBuffer()))) {
+    if (!fresh.load_save(new Uint8Array(await file.arrayBuffer()), now())) {
       fresh.free();
       setSaveStatus(["save.noBattery"]);
       return;
     }
-    await writeSave(fresh.save_key(), fresh.save_data());
+    await writeSave(fresh.save_key(), fresh.save_data(now()));
     await start(fresh, ["status.rom", fresh.title() || currentRom.name, currentRom.name], {
       keepPreviousSave: false,
     });

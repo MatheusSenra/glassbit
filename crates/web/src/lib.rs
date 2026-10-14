@@ -223,14 +223,18 @@ impl Emulator {
         })
     }
 
-    /// A copy of the battery-backed RAM, or `undefined` without a battery.
-    pub fn save_data(&self) -> Option<Vec<u8>> {
-        on!(self.machine(), gb => gb.save_data().map(<[u8]>::to_vec))
+    /// What the battery keeps (RAM, and the clock on MBC3 cartridges that
+    /// have one), or `undefined` without a battery. `now` is the current
+    /// time in seconds since 1970, stored with the clock so it can catch up
+    /// on the time the game spends closed.
+    pub fn save_data(&self, now: f64) -> Option<Vec<u8>> {
+        on!(self.machine(), gb => gb.save_data_at(now.max(0.0) as u64))
     }
 
-    /// Restores battery-backed RAM. Call before running the first frame.
-    pub fn load_save(&mut self, data: &[u8]) -> bool {
-        on!(self.machine_mut(), gb => gb.load_save(data))
+    /// Restores what `save_data` returned, letting a saved clock catch up to
+    /// `now` (seconds since 1970). Call before running the first frame.
+    pub fn load_save(&mut self, data: &[u8], now: f64) -> bool {
+        on!(self.machine_mut(), gb => gb.load_save_at(data, now.max(0.0) as u64))
     }
 
     /// Whether the save data changed since the last call.
@@ -591,9 +595,9 @@ mod tests {
     fn demo_has_no_save_but_still_has_a_key() {
         let mut emulator = Emulator::demo();
         assert!(!emulator.has_battery());
-        assert!(emulator.save_data().is_none());
+        assert!(emulator.save_data(0.0).is_none());
         assert!(!emulator.take_save_dirty());
-        assert!(!emulator.load_save(&[0; 16]));
+        assert!(!emulator.load_save(&[0; 16], 0.0));
         assert!(emulator.save_key().starts_with("GLASSBIT DEMO-"));
     }
 
