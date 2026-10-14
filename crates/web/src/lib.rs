@@ -46,9 +46,47 @@ pub fn screen_height() -> u32 {
     SCREEN_HEIGHT as u32
 }
 
+/// One bit per address in the 64 KiB address space.
+#[derive(Clone)]
+struct AddressSet(Box<[u64]>);
+
+impl AddressSet {
+    fn new(addresses: &[u16]) -> Self {
+        let mut bits = vec![0u64; 1024].into_boxed_slice();
+        for &addr in addresses {
+            bits[addr as usize / 64] |= 1 << (addr % 64);
+        }
+        Self(bits)
+    }
+
+    fn contains(&self, addr: u16) -> bool {
+        self.0[addr as usize / 64] & 1 << (addr % 64) != 0
+    }
+}
+
+impl Default for AddressSet {
+    fn default() -> Self {
+        Self::new(&[])
+    }
+}
+
+/// Where the program stopped and why.
+#[derive(Clone, Copy)]
+enum Hit {
+    /// PC arrived at an execution breakpoint.
+    Execute(u16),
+    /// The CPU wrote a value to a watched address.
+    Write(u16, u8),
+}
+
 /// The observer used while the X-ray panel is open.
 #[derive(Default)]
 struct Recorder {
+    /// Stop before executing the instruction at these addresses.
+    execute_breakpoints: AddressSet,
+    /// Stop right after a write to these addresses.
+    write_breakpoints: AddressSet,
+    hit: Option<Hit>,
     /// Frames seen since recording started.
     frame: u32,
     /// The line the PPU was on at its last mode change.
@@ -68,8 +106,21 @@ fn push_capped<T>(log: &mut VecDeque<T>, entry: T) {
 }
 
 impl Observer for Recorder {
-    fn instruction(&mut self, _before: &Registers, _after: &Registers) {
+    fn instruction(&mut self, _before: &Registers, after: &Registers) {
         self.instructions = self.instructions.wrapping_add(1);
+        if self.execute_breakpoints.contains(after.pc) {
+            self.hit = Some(Hit::Execute(after.pc));
+        }
+    }
+
+    fn memory_write(&mut self, addr: u16, value: u8) {
+        if self.write_breakpoints.contains(addr) {
+            self.hit = Some(Hit::Write(addr, value));
+        }
+    }
+
+    fn should_stop(&mut self) -> bool {
+        self.hit.is_some()
     }
 
     fn interrupt(&mut self, bit: u8) {
@@ -111,6 +162,9 @@ pub struct Emulator {
     machine: Option<Machine>,
     /// The RGBA color shown for each of the four shades.
     palette: [[u8; 4]; 4],
+    /// Kept here so they survive the panel being closed and opened.
+    execute_breakpoints: Vec<u16>,
+    write_breakpoints: Vec<u16>,
 }
 
 impl Emulator {
@@ -118,6 +172,8 @@ impl Emulator {
         Self {
             machine: Some(Machine::Plain(gb)),
             palette: DEFAULT_PALETTE,
+            execute_breakpoints: Vec::new(),
+            write_breakpoints: Vec::new(),
         }
     }
 
@@ -242,12 +298,42 @@ impl Emulator {
     pub fn set_xray(&mut self, enabled: bool) {
         let machine = self.machine.take().expect("machine is present");
         self.machine = Some(match (machine, enabled) {
-            (Machine::Plain(gb), true) => Machine::Xray(gb.into_observed(Recorder::default())),
+            (Machine::Plain(gb), true) => Machine::Xray(gb.into_observed(Recorder {
+                execute_breakpoints: AddressSet::new(&self.execute_breakpoints),
+                write_breakpoints: AddressSet::new(&self.write_breakpoints),
+                ..Recorder::default()
+            })),
             (Machine::Xray(gb), false) => {
                 Machine::Plain(gb.into_observed(glassbit_core::observer::NullObserver))
             }
             (unchanged, _) => unchanged,
         });
+    }
+
+    /// Sets the breakpoints: stop before executing an instruction at any of
+    /// `execute`, or right after the CPU writes to any of `write`. They only
+    /// take effect while recording (see `set_xray`).
+    pub fn set_breakpoints(&mut self, execute: &[u16], write: &[u16]) {
+        self.execute_breakpoints = execute.to_vec();
+        self.write_breakpoints = write.to_vec();
+        if let Some(Machine::Xray(gb)) = &mut self.machine {
+            let recorder = gb.observer_mut();
+            recorder.execute_breakpoints = AddressSet::new(execute);
+            recorder.write_breakpoints = AddressSet::new(write);
+        }
+    }
+
+    /// If the last frame, line or step stopped at a breakpoint, says which,
+    /// as `"execute|0150"` or `"write|C000|07"` (hexadecimal), and clears
+    /// it. Otherwise returns `undefined`.
+    pub fn take_breakpoint_hit(&mut self) -> Option<String> {
+        let Some(Machine::Xray(gb)) = &mut self.machine else {
+            return None;
+        };
+        gb.observer_mut().hit.take().map(|hit| match hit {
+            Hit::Execute(addr) => format!("execute|{addr:04X}"),
+            Hit::Write(addr, value) => format!("write|{addr:04X}|{value:02X}"),
+        })
     }
 
     /// Whether events are being recorded.
@@ -480,6 +566,59 @@ mod tests {
         assert_eq!(log.len() % 3, 0);
         assert!(log.chunks_exact(3).any(|entry| entry[0] == 0xFF47));
         assert!(log.len() <= 3 * LOG_CAPACITY);
+    }
+
+    #[test]
+    fn execute_breakpoints_stop_a_frame_before_the_instruction() {
+        let mut emulator = Emulator::demo();
+        // 0x0150 is the first instruction after the entry point's jump.
+        emulator.set_breakpoints(&[0x0150], &[]);
+        emulator.run_frame();
+        assert_eq!(emulator.take_breakpoint_hit(), None, "only while recording");
+
+        let mut emulator = Emulator::demo();
+        emulator.set_breakpoints(&[0x0150], &[]);
+        emulator.set_xray(true);
+        emulator.run_frame();
+        assert_eq!(emulator.cpu_state()[5], 0x0150);
+        assert_eq!(
+            emulator.take_breakpoint_hit().as_deref(),
+            Some("execute|0150")
+        );
+        assert_eq!(emulator.take_breakpoint_hit(), None, "taking clears it");
+
+        // Resuming goes past it.
+        emulator.run_frame();
+        assert_ne!(emulator.cpu_state()[5], 0x0150);
+    }
+
+    #[test]
+    fn write_breakpoints_stop_right_after_the_write() {
+        let mut emulator = Emulator::demo();
+        emulator.set_xray(true);
+        // The demo writes its sprite's Y position to OAM every frame, but
+        // only after setup: let that finish first.
+        for _ in 0..12 {
+            emulator.run_frame();
+        }
+        emulator.set_breakpoints(&[], &[0xFE00]);
+        emulator.run_frame();
+        let hit = emulator.take_breakpoint_hit().expect("the write is caught");
+        assert!(hit.starts_with("write|FE00|"), "{hit}");
+        assert_eq!(emulator.peek(0xFE00), glassbit_core::demo::START_Y);
+
+        // Breakpoints survive closing and reopening the panel. The stop
+        // came in the middle of VBlank, so the first run only finishes that
+        // frame; the next write comes in the frame after.
+        emulator.set_xray(false);
+        emulator.set_xray(true);
+        emulator.run_frame();
+        emulator.run_frame();
+        assert!(emulator.take_breakpoint_hit().is_some());
+
+        emulator.set_breakpoints(&[], &[]);
+        emulator.run_frame();
+        assert_eq!(emulator.take_breakpoint_hit(), None);
     }
 
     #[test]
