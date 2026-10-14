@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 
-use glassbit_core::{Button, GameBoy, SCREEN_HEIGHT, SCREEN_WIDTH};
+use glassbit_core::{Button, GameBoy, Model, SCREEN_HEIGHT, SCREEN_WIDTH};
 
 /// The original LCD's green tint, lightest shade first.
 const PALETTE: [u8; 12] = [
@@ -65,6 +65,40 @@ pub fn parse_presses(script: &str) -> Result<Vec<Press>, String> {
         .collect()
 }
 
+/// Enlarges a screen by [`SCALE`], given as rows of `SCREEN_WIDTH` items of
+/// `bytes_per_pixel` bytes each.
+fn scale_bytes(pixels: &[u8], bytes_per_pixel: usize) -> Vec<u8> {
+    let mut scaled = Vec::with_capacity(pixels.len() * SCALE * SCALE);
+    for row in pixels.chunks_exact(SCREEN_WIDTH * bytes_per_pixel) {
+        let wide: Vec<u8> = row
+            .chunks_exact(bytes_per_pixel)
+            .flat_map(|pixel| std::iter::repeat(pixel).take(SCALE).flatten().copied())
+            .collect();
+        for _ in 0..SCALE {
+            scaled.extend_from_slice(&wide);
+        }
+    }
+    scaled
+}
+
+/// Enlarges a screen of one-byte pixels, or of RGB pixels flattened to
+/// bytes, by [`SCALE`].
+fn scale(pixels: &[u8]) -> Vec<u8> {
+    let bytes_per_pixel = pixels.len() / (SCREEN_WIDTH * SCREEN_HEIGHT);
+    scale_bytes(pixels, bytes_per_pixel)
+}
+
+/// Lets `[[u8; 3]]` be passed where bytes are expected.
+trait FlattenRgb {
+    fn as_flattened_rgb(&self) -> &[u8];
+}
+
+impl FlattenRgb for Vec<[u8; 3]> {
+    fn as_flattened_rgb(&self) -> &[u8] {
+        self.as_flattened()
+    }
+}
+
 /// Runs `gb` for `frames` frames, applying `presses`, and writes what the
 /// screen showed to an animated GIF at `path`.
 pub fn record_gif(
@@ -92,19 +126,15 @@ pub fn record_gif(
             continue;
         }
 
-        // The framebuffer already holds palette indices 0-3; only scaling
-        // is needed.
-        let mut pixels = Vec::with_capacity(width as usize * height as usize);
-        for row in gb.framebuffer().chunks_exact(SCREEN_WIDTH) {
-            let scaled: Vec<u8> = row
-                .iter()
-                .flat_map(|&shade| std::iter::repeat(shade).take(SCALE))
-                .collect();
-            for _ in 0..SCALE {
-                pixels.extend_from_slice(&scaled);
-            }
-        }
-        let mut image = gif::Frame::from_indexed_pixels(width, height, pixels, None);
+        let mut image = if gb.model() == Model::Dmg {
+            // The framebuffer already holds palette indices 0-3; only
+            // scaling is needed.
+            gif::Frame::from_indexed_pixels(width, height, scale(gb.framebuffer()), None)
+        } else {
+            // Color frames get their own palette, chosen per frame.
+            let rgb = scale(gb.rgb_framebuffer().as_flattened_rgb());
+            gif::Frame::from_rgb_speed(width, height, &rgb, 10)
+        };
         image.delay = FRAME_DELAY;
         encoder.write_frame(&image)?;
     }

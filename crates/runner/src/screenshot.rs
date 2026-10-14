@@ -1,7 +1,9 @@
 //! Saving the screen as a PNG and loading reference images to compare with.
 //!
-//! Images are 160x144 grayscale. The four DMG shades map to evenly spaced
-//! grays, which is what the reference images of the test ROM collection use.
+//! Screens are handled as 8-bit RGB, as `GameBoy::rgb_framebuffer` returns
+//! them. On a DMG the four shades map to evenly spaced grays, and Game Boy
+//! Color channels are widened from 5 to 8 bits: both match the reference
+//! images of the test ROM collection.
 
 use std::error::Error;
 use std::fs::File;
@@ -10,28 +12,26 @@ use std::path::Path;
 
 use glassbit_core::{SCREEN_HEIGHT, SCREEN_WIDTH};
 
-/// Gray level of each shade, from 0 (lightest) to 3 (darkest).
-const GRAYS: [u8; 4] = [0xFF, 0xAA, 0x55, 0x00];
+/// One pixel: red, green, blue.
+pub type Rgb = [u8; 3];
 
-/// Writes a framebuffer of shades (as returned by `GameBoy::framebuffer`).
-pub fn save(framebuffer: &[u8], path: &Path) -> Result<(), Box<dyn Error>> {
+/// Writes a screen of RGB pixels.
+pub fn save(screen: &[Rgb], path: &Path) -> Result<(), Box<dyn Error>> {
     let mut encoder = png::Encoder::new(
         BufWriter::new(File::create(path)?),
         SCREEN_WIDTH as u32,
         SCREEN_HEIGHT as u32,
     );
-    encoder.set_color(png::ColorType::Grayscale);
+    encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
-    let pixels: Vec<u8> = framebuffer
-        .iter()
-        .map(|&shade| GRAYS[shade as usize])
-        .collect();
-    encoder.write_header()?.write_image_data(&pixels)?;
+    encoder
+        .write_header()?
+        .write_image_data(screen.as_flattened())?;
     Ok(())
 }
 
-/// Reads a 160x144 PNG and converts it back to shades.
-pub fn load(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
+/// Reads a 160x144 PNG (gray or color, any bit depth) as RGB pixels.
+pub fn load(path: &Path) -> Result<Vec<Rgb>, Box<dyn Error>> {
     let mut decoder = png::Decoder::new(BufReader::new(File::open(path)?));
     // Expands palettes and low bit depths to 8 bits per channel.
     decoder.set_transformations(png::Transformations::EXPAND);
@@ -48,23 +48,21 @@ pub fn load(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
         .into());
     }
 
-    // The first channel is enough: the images are gray.
     let channels = info.color_type.samples();
     Ok(pixels[..info.buffer_size()]
         .chunks_exact(channels)
-        .map(|pixel| nearest_shade(pixel[0]))
+        .map(|pixel| match channels {
+            // Gray, possibly with alpha.
+            1 | 2 => [pixel[0]; 3],
+            // RGB, possibly with alpha.
+            _ => [pixel[0], pixel[1], pixel[2]],
+        })
         .collect())
 }
 
-fn nearest_shade(gray: u8) -> u8 {
-    (0..4u8)
-        .min_by_key(|&shade| GRAYS[shade as usize].abs_diff(gray))
-        .expect("four shades")
-}
-
-/// Compares two framebuffers. Returns the number of differing pixels and the
+/// Compares two screens. Returns the number of differing pixels and the
 /// coordinates of the first one.
-pub fn compare(actual: &[u8], expected: &[u8]) -> (usize, Option<(usize, usize)>) {
+pub fn compare(actual: &[Rgb], expected: &[Rgb]) -> (usize, Option<(usize, usize)>) {
     let mut differing = actual
         .iter()
         .zip(expected)
@@ -80,27 +78,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn png_round_trip_preserves_every_shade() {
-        let framebuffer: Vec<u8> = (0..SCREEN_WIDTH * SCREEN_HEIGHT)
-            .map(|i| (i % 4) as u8)
+    fn png_round_trip_preserves_every_color() {
+        let screen: Vec<Rgb> = (0..SCREEN_WIDTH * SCREEN_HEIGHT)
+            .map(|i| [i as u8, (i / 7) as u8, (i % 251) as u8])
             .collect();
         let path = std::env::temp_dir().join(format!(
             "glassbit-screenshot-test-{}.png",
             std::process::id()
         ));
-        save(&framebuffer, &path).unwrap();
+        save(&screen, &path).unwrap();
         let loaded = load(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(loaded, framebuffer);
+        assert_eq!(loaded, screen);
     }
 
     #[test]
     fn compare_counts_differences_and_finds_the_first() {
-        let a = vec![0u8; SCREEN_WIDTH * SCREEN_HEIGHT];
+        let a = vec![[0u8; 3]; SCREEN_WIDTH * SCREEN_HEIGHT];
         let mut b = a.clone();
         assert_eq!(compare(&a, &b), (0, None));
-        b[SCREEN_WIDTH * 2 + 5] = 3;
-        b[SCREEN_WIDTH * 9] = 1;
+        b[SCREEN_WIDTH * 2 + 5] = [0, 0, 1];
+        b[SCREEN_WIDTH * 9] = [9, 9, 9];
         assert_eq!(compare(&a, &b), (2, Some((5, 2))));
     }
 }

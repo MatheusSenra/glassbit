@@ -100,7 +100,7 @@ fn main() -> ExitCode {
         return match record_gif(&mut gb, max_frames, &presses, &gif) {
             Ok(()) => {
                 println!("recorded {max_frames} frames to {}", gif.display());
-                if save_screenshot(gb.framebuffer(), screenshot_path.as_deref()) {
+                if save_screenshot(&gb.rgb_framebuffer(), screenshot_path.as_deref()) {
                     ExitCode::SUCCESS
                 } else {
                     ExitCode::FAILURE
@@ -151,7 +151,7 @@ fn main() -> ExitCode {
         }
     };
 
-    if !save_screenshot(&run.framebuffer, screenshot_path.as_deref()) {
+    if !save_screenshot(&run.screen, screenshot_path.as_deref()) {
         return ExitCode::FAILURE;
     }
     if !run.output.is_empty() {
@@ -176,9 +176,9 @@ fn main() -> ExitCode {
 }
 
 /// Saves the screen when a path was given. Returns `false` on failure.
-fn save_screenshot(framebuffer: &[u8], path: Option<&Path>) -> bool {
+fn save_screenshot(screen: &[screenshot::Rgb], path: Option<&Path>) -> bool {
     let Some(path) = path else { return true };
-    match screenshot::save(framebuffer, path) {
+    match screenshot::save(screen, path) {
         Ok(()) => {
             println!("screenshot saved to {}", path.display());
             true

@@ -41,8 +41,8 @@ pub struct TestRun {
     /// Everything the ROM printed over the serial port.
     pub output: String,
     pub frames: u32,
-    /// The screen at the end of the run, one shade per pixel.
-    pub framebuffer: Vec<u8>,
+    /// The screen at the end of the run, as RGB.
+    pub screen: Vec<screenshot::Rgb>,
 }
 
 /// Frames to keep running after a serial verdict shows up, so the rest of
@@ -103,13 +103,16 @@ pub fn run_test(rom: &[u8], max_frames: u32) -> Result<TestRun, CartridgeError> 
         outcome,
         output,
         frames,
-        framebuffer: gb.framebuffer().to_vec(),
+        screen: gb.rgb_framebuffer(),
     })
 }
 
 /// Runs a visual test ROM until it executes `LD B,B` (or `max_frames` go by)
-/// and returns the finished screen, one shade per pixel.
-pub fn run_screen_test(rom: &[u8], max_frames: u32) -> Result<Vec<u8>, CartridgeError> {
+/// and returns the finished screen as RGB.
+pub fn run_screen_test(
+    rom: &[u8],
+    max_frames: u32,
+) -> Result<Vec<screenshot::Rgb>, CartridgeError> {
     let mut gb = GameBoy::new(rom)?;
     let deadline = max_frames as u64 * CYCLES_PER_FRAME;
     while gb.cycles() < deadline {
@@ -123,7 +126,7 @@ pub fn run_screen_test(rom: &[u8], max_frames: u32) -> Result<Vec<u8>, Cartridge
     // draw it, after finishing the one in progress.
     gb.run_frame();
     gb.run_frame();
-    Ok(gb.framebuffer().to_vec())
+    Ok(gb.rgb_framebuffer())
 }
 
 /// Checks for a finished Blargg test that reports through cartridge RAM.
