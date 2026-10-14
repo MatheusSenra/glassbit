@@ -32,6 +32,45 @@ const PALETTES = {
 };
 const PALETTE_STORAGE_KEY = "glassbit-palette";
 
+// Colors for DMG games on a Game Boy Color (compatibility mode): a palette
+// for the background, then one for each sprite palette (OBP0, OBP1), each
+// from lightest to darkest. The real boot ROM chooses by game title; these
+// are the colors it uses when it does not know the game, followed by some
+// it lets the player pick with the buttons at power on.
+const COMPAT_PALETTES = {
+  standard: [
+    [[0xff, 0xff, 0xff], [0x7b, 0xff, 0x31], [0x00, 0x63, 0xc6], [0x00, 0x00, 0x00]],
+    [[0xff, 0xff, 0xff], [0xff, 0x84, 0x84], [0x94, 0x39, 0x39], [0x00, 0x00, 0x00]],
+    [[0xff, 0xff, 0xff], [0xff, 0x84, 0x84], [0x94, 0x39, 0x39], [0x00, 0x00, 0x00]],
+  ],
+  brown: [
+    [[0xff, 0xff, 0xff], [0xff, 0xad, 0x63], [0x84, 0x31, 0x00], [0x00, 0x00, 0x00]],
+    [[0xff, 0xff, 0xff], [0xff, 0xad, 0x63], [0x84, 0x31, 0x00], [0x00, 0x00, 0x00]],
+    [[0xff, 0xff, 0xff], [0xff, 0xad, 0x63], [0x84, 0x31, 0x00], [0x00, 0x00, 0x00]],
+  ],
+  blue: [
+    [[0xff, 0xff, 0xff], [0x63, 0xa5, 0xff], [0x00, 0x00, 0xff], [0x00, 0x00, 0x00]],
+    [[0xff, 0xff, 0xff], [0xff, 0x84, 0x84], [0x94, 0x39, 0x39], [0x00, 0x00, 0x00]],
+    [[0xff, 0xff, 0xff], [0x7b, 0xff, 0x31], [0x00, 0x84, 0x00], [0x00, 0x00, 0x00]],
+  ],
+  gray: [
+    [[0xff, 0xff, 0xff], [0xa5, 0xa5, 0xa5], [0x52, 0x52, 0x52], [0x00, 0x00, 0x00]],
+    [[0xff, 0xff, 0xff], [0xa5, 0xa5, 0xa5], [0x52, 0x52, 0x52], [0x00, 0x00, 0x00]],
+    [[0xff, 0xff, 0xff], [0xa5, 0xa5, 0xa5], [0x52, 0x52, 0x52], [0x00, 0x00, 0x00]],
+  ],
+  inverted: [
+    [[0x00, 0x00, 0x00], [0x00, 0x84, 0x84], [0xff, 0xde, 0x00], [0xff, 0xff, 0xff]],
+    [[0x00, 0x00, 0x00], [0x00, 0x84, 0x84], [0xff, 0xde, 0x00], [0xff, 0xff, 0xff]],
+    [[0x00, 0x00, 0x00], [0x00, 0x84, 0x84], [0xff, 0xde, 0x00], [0xff, 0xff, 0xff]],
+  ],
+};
+const COMPAT_PALETTE_STORAGE_KEY = "glassbit-compat-palette";
+
+// Which console runs the games: "auto" lets each game choose (color games
+// on a Game Boy Color, the rest on a DMG).
+const MODELS = ["auto", "dmg", "cgb"];
+const MODEL_STORAGE_KEY = "glassbit-model";
+
 // Indices match `Button::ALL` in the core.
 const KEY_TO_BUTTON = {
   ArrowRight: 0,
@@ -57,6 +96,7 @@ const linkButton = document.getElementById("link-toggle");
 const linkDialog = document.getElementById("link-dialog");
 const importSaveLabel = document.getElementById("import-save-label");
 const paletteSelect = document.getElementById("palette");
+const modelSelect = document.getElementById("model");
 const languageSelect = document.getElementById("language");
 const screenFrame = document.getElementById("screen-frame");
 const dropHint = document.getElementById("drop-hint");
@@ -77,6 +117,8 @@ let framesSinceXray = 0;
 let fastHeld = false;
 let fastLocked = false;
 let paletteName = "green";
+let compatPaletteName = "standard";
+let modelName = "auto";
 // The ROM of the running game, needed to restart it with an imported save;
 // null for the built-in demo.
 let currentRom = null;
@@ -144,6 +186,7 @@ async function start(newEmulator, message, { keepPreviousSave = true } = {}) {
 
   newEmulator.set_sample_rate(audio.sampleRate);
   newEmulator.set_palette(new Uint8Array(PALETTES[paletteName].flat()));
+  newEmulator.set_compat_palettes(new Uint8Array(COMPAT_PALETTES[compatPaletteName].flat(2)));
   newEmulator.set_xray(xray.open);
   newEmulator.set_breakpoints(...xray.breakpointArrays());
   newEmulator.set_linked(link.connected);
@@ -151,6 +194,8 @@ async function start(newEmulator, message, { keepPreviousSave = true } = {}) {
   importSaveLabel.hidden = !newEmulator.has_battery();
   xray.setStopReason(null);
   emulator = newEmulator;
+  fillPaletteSelect();
+  showPalette();
   pendingMs = 0;
   xray.forget();
   setPaused(false);
@@ -161,7 +206,7 @@ async function start(newEmulator, message, { keepPreviousSave = true } = {}) {
 async function loadRom(bytes, name) {
   let loaded;
   try {
-    loaded = new Emulator(bytes);
+    loaded = new Emulator(bytes, modelName);
   } catch (error) {
     // Keep whatever was running; just report the problem.
     setStatus(["status.loadError", name, error.message], true);
@@ -336,19 +381,56 @@ function setXrayOpen(open) {
   xray.render(emulator, paused);
 }
 
-function setPalette(name) {
-  if (!(name in PALETTES)) return;
-  paletteName = name;
-  emulator?.set_palette(new Uint8Array(PALETTES[name].flat()));
-  xray.setShades(PALETTES[name]);
-  // The page behind the canvas shows through before the first frame.
-  canvas.style.background = `rgb(${PALETTES[name][0].join(",")})`;
-  if (emulator) draw();
-  xray.render(emulator, paused);
+// Remembers a choice for the next visit.
+function remember(key, value) {
   try {
-    localStorage.setItem(PALETTE_STORAGE_KEY, name);
+    localStorage.setItem(key, value);
   } catch {
     // Not being able to remember the choice is harmless.
+  }
+}
+
+// The colors menu lists DMG shades, or the Color's palettes for a DMG game
+// in compatibility mode. A color game brings its own colors.
+function compatColors() {
+  return emulator?.is_compat() ?? false;
+}
+
+function setPalette(name) {
+  if (compatColors()) {
+    if (!(name in COMPAT_PALETTES)) return;
+    compatPaletteName = name;
+    emulator.set_compat_palettes(new Uint8Array(COMPAT_PALETTES[name].flat(2)));
+    remember(COMPAT_PALETTE_STORAGE_KEY, name);
+  } else {
+    if (!(name in PALETTES)) return;
+    paletteName = name;
+    emulator?.set_palette(new Uint8Array(PALETTES[name].flat()));
+    remember(PALETTE_STORAGE_KEY, name);
+  }
+  showPalette();
+}
+
+// Brings the X-ray tile views and the canvas background in line with the
+// colors in use.
+function showPalette() {
+  const shades = compatColors() ? COMPAT_PALETTES[compatPaletteName][0] : PALETTES[paletteName];
+  xray.setShades(shades);
+  // The page behind the canvas shows through before the first frame.
+  canvas.style.background = `rgb(${shades[0].join(",")})`;
+  if (emulator) draw();
+  xray.render(emulator, paused);
+}
+
+// Powers the current game (or the demo) on again on the chosen console.
+async function setModel(name) {
+  if (!MODELS.includes(name)) return;
+  modelName = name;
+  remember(MODEL_STORAGE_KEY, name);
+  if (currentRom) {
+    await loadRom(currentRom.bytes, currentRom.name);
+  } else {
+    await start(Emulator.demo(modelName), ["status.demo"]);
   }
 }
 
@@ -492,7 +574,7 @@ async function importSave(file) {
     return;
   }
   try {
-    const fresh = new Emulator(currentRom.bytes);
+    const fresh = new Emulator(currentRom.bytes, modelName);
     if (!fresh.load_save(new Uint8Array(await file.arrayBuffer()), now())) {
       fresh.free();
       setSaveStatus(["save.noBattery"]);
@@ -533,18 +615,31 @@ fastButton.addEventListener("click", () => {
 
 function fillPaletteSelect() {
   paletteSelect.replaceChildren();
-  for (const name of Object.keys(PALETTES)) {
-    paletteSelect.append(new Option(t(`palette.${name}`), name, false, name === paletteName));
+  const compat = compatColors();
+  const [list, current, prefix] = compat
+    ? [COMPAT_PALETTES, compatPaletteName, "compatPalette"]
+    : [PALETTES, paletteName, "palette"];
+  for (const name of Object.keys(list)) {
+    paletteSelect.append(new Option(t(`${prefix}.${name}`), name, false, name === current));
   }
+  paletteSelect.disabled = (emulator?.is_cgb() ?? false) && !compat;
 }
 paletteSelect.addEventListener("change", () => {
   setPalette(paletteSelect.value);
   canvas.focus();
 });
 
+function fillModelSelect() {
+  modelSelect.replaceChildren();
+  for (const name of MODELS) {
+    modelSelect.append(new Option(t(`model.${name}`), name, false, name === modelName));
+  }
+}
+modelSelect.addEventListener("change", () => setModel(modelSelect.value));
+
 document.getElementById("demo").addEventListener("click", () => {
   currentRom = null;
-  start(Emulator.demo(), ["status.demo"]);
+  start(Emulator.demo(modelName), ["status.demo"]);
 });
 
 for (const code of LANGUAGES) {
@@ -560,6 +655,7 @@ onLanguageChange(() => {
   xrayButton.textContent = t(xray.open ? "button.xrayClose" : "button.xray");
   showFastButton();
   fillPaletteSelect();
+  fillModelSelect();
   showLinkState();
   xray.render(emulator, paused);
 });
@@ -590,13 +686,18 @@ window.addEventListener("drop", (event) => {
 try {
   const stored = localStorage.getItem(PALETTE_STORAGE_KEY);
   if (stored in PALETTES) paletteName = stored;
+  const storedCompat = localStorage.getItem(COMPAT_PALETTE_STORAGE_KEY);
+  if (storedCompat in COMPAT_PALETTES) compatPaletteName = storedCompat;
+  const storedModel = localStorage.getItem(MODEL_STORAGE_KEY);
+  if (MODELS.includes(storedModel)) modelName = storedModel;
 } catch {
-  // Storage can be blocked; the default palette is fine.
+  // Storage can be blocked; the defaults are fine.
 }
 fillPaletteSelect();
-setPalette(paletteName);
+fillModelSelect();
+showPalette();
 
-await start(Emulator.demo(), ["status.demo"]);
+await start(Emulator.demo(modelName), ["status.demo"]);
 document.title = `Glassbit ${core_version()}`;
 requestAnimationFrame(onAnimationFrame);
 
@@ -612,6 +713,7 @@ window.glassbit = {
   saveState,
   loadState,
   setPalette,
+  setModel,
   exportSave,
   importSave,
   link,

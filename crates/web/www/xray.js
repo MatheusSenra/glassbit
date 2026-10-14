@@ -553,7 +553,7 @@ export class Xray {
     const cgb = emulator.is_cgb();
     const table = $("#xray-ppu-state");
     table.replaceChildren(
-      row([t("ppu.console"), t(cgb ? "ppu.console.cgb" : "ppu.console.dmg")]),
+      row([t("ppu.console"), t(consoleKey(emulator))]),
       row([t("ppu.mode"), lcdOn ? t(`ppu.mode.${stat & 3}`) : t("ppu.lcdOff")]),
       row([t("ppu.line"), `${line}  (LYC ${emulator.peek(0xff45)})`]),
       row([t("ppu.scroll"), `${scx}, ${scy}`]),
@@ -752,4 +752,10 @@ export class Xray {
     $("#xray-timer-state").textContent =
       tac & 0x04 ? t("int.timer.state", TIMER_HZ[tac & 3]) : t("int.timer.off");
   }
+}
+
+// The translation key naming the console the game runs on.
+function consoleKey(emulator) {
+  if (!emulator.is_cgb()) return "ppu.console.dmg";
+  return emulator.is_compat() ? "ppu.console.compat" : "ppu.console.cgb";
 }

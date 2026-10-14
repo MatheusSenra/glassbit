@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 
 use glassbit_core::cpu::Registers;
 use glassbit_core::observer::Observer;
-use glassbit_core::ppu::Mode;
+use glassbit_core::ppu::{rgb555, Mode};
 use glassbit_core::serial::LinkMessage;
 use glassbit_core::{Button, GameBoy, Model, SCREEN_HEIGHT, SCREEN_WIDTH};
 use wasm_bindgen::prelude::*;
@@ -189,17 +189,19 @@ impl Emulator {
 
 #[wasm_bindgen]
 impl Emulator {
-    /// Powers on with the given ROM image. Throws when the ROM is invalid or
-    /// uses a mapper that is not supported yet.
+    /// Powers on with the given ROM image. `model` is `"dmg"` or `"cgb"`
+    /// to choose the console (a DMG game on `"cgb"` runs in compatibility
+    /// mode), anything else for the one the game asks for. Throws when the
+    /// ROM is invalid or uses a mapper that is not supported yet.
     #[wasm_bindgen(constructor)]
-    pub fn new(rom: &[u8]) -> Result<Emulator, JsError> {
-        let gb = GameBoy::new(rom).map_err(|err| JsError::new(&err.to_string()))?;
+    pub fn new(rom: &[u8], model: &str) -> Result<Emulator, JsError> {
+        let gb = boot(rom, model).map_err(|err| JsError::new(&err.to_string()))?;
         Ok(Self::from_core(gb))
     }
 
-    /// Powers on with the built-in demo cartridge.
-    pub fn demo() -> Emulator {
-        let gb = GameBoy::new(&glassbit_core::demo::rom()).expect("the demo ROM is valid");
+    /// Powers on with the built-in demo cartridge, a DMG game.
+    pub fn demo(model: &str) -> Emulator {
+        let gb = boot(&glassbit_core::demo::rom(), model).expect("the demo ROM is valid");
         Self::from_core(gb)
     }
 
@@ -270,10 +272,35 @@ impl Emulator {
         })
     }
 
-    /// Whether the game runs on a Game Boy Color, in color mode. The palette
-    /// chosen with `set_palette` only applies to DMG games.
+    /// Whether the game runs on a Game Boy Color, in color or compatibility
+    /// mode. The palette chosen with `set_palette` only applies to a DMG.
     pub fn is_cgb(&self) -> bool {
         on!(self.machine(), gb => gb.model() == Model::Cgb)
+    }
+
+    /// Whether a Game Boy Color runs a DMG game in compatibility mode.
+    pub fn is_compat(&self) -> bool {
+        on!(self.machine(), gb => gb.compatibility_mode())
+    }
+
+    /// In compatibility mode, chooses the colors: 36 bytes, red, green and
+    /// blue for each of four shades (lightest first) of the background
+    /// palette, then the sprite palettes for OBP0 and OBP1. Other lengths
+    /// are ignored.
+    pub fn set_compat_palettes(&mut self, rgb: &[u8]) {
+        if rgb.len() != 36 {
+            return;
+        }
+        let mut palettes = [[0u16; 4]; 3];
+        for (color, channels) in palettes
+            .as_flattened_mut()
+            .iter_mut()
+            .zip(rgb.chunks_exact(3))
+        {
+            let rgb = u32::from_be_bytes([0, channels[0], channels[1], channels[2]]);
+            *color = rgb555(rgb);
+        }
+        on!(self.machine_mut(), gb => gb.set_compat_palettes(&palettes));
     }
 
     /// The Color palette RAM, background palettes then sprite palettes (128
@@ -506,6 +533,15 @@ fn write_color_rgba(framebuffer: &[u16], out: &mut [u8]) {
     }
 }
 
+/// Powers on a console as `Emulator::new` describes.
+fn boot(rom: &[u8], model: &str) -> Result<GameBoy, glassbit_core::cartridge::CartridgeError> {
+    match model {
+        "dmg" => GameBoy::new_as(rom, Model::Dmg),
+        "cgb" => GameBoy::new_as(rom, Model::Cgb),
+        _ => GameBoy::new(rom),
+    }
+}
+
 fn write_rgba(framebuffer: &[u8], palette: &[[u8; 4]; 4], out: &mut [u8]) {
     for (pixel, &shade) in out.chunks_exact_mut(4).zip(framebuffer) {
         pixel.copy_from_slice(&palette[shade as usize]);
@@ -522,7 +558,7 @@ mod tests {
 
     #[test]
     fn demo_frame_converts_to_opaque_rgba() {
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         for _ in 0..12 {
             emulator.run_frame();
         }
@@ -546,7 +582,7 @@ mod tests {
 
     #[test]
     fn save_state_round_trip_keeps_xray_recording_on() {
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         for _ in 0..12 {
             emulator.run_frame();
         }
@@ -567,7 +603,7 @@ mod tests {
 
     #[test]
     fn buttons_reach_the_core_and_bad_indices_are_ignored() {
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         emulator.set_button(4, true);
         assert!(is_pressed(&emulator, Button::A));
         emulator.set_button(4, false);
@@ -577,7 +613,7 @@ mod tests {
 
     #[test]
     fn frames_carry_audio_at_the_requested_rate() {
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         emulator.set_sample_rate(44_100);
         emulator.run_frame();
         emulator.run_frame();
@@ -588,12 +624,12 @@ mod tests {
 
     #[test]
     fn reports_the_cartridge_title() {
-        assert_eq!(Emulator::demo().title(), "GLASSBIT DEMO");
+        assert_eq!(Emulator::demo("auto").title(), "GLASSBIT DEMO");
     }
 
     #[test]
     fn demo_has_no_save_but_still_has_a_key() {
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         assert!(!emulator.has_battery());
         assert!(emulator.save_data(0.0).is_none());
         assert!(!emulator.take_save_dirty());
@@ -603,7 +639,7 @@ mod tests {
 
     #[test]
     fn xray_can_be_toggled_while_the_game_keeps_its_state() {
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         for _ in 0..12 {
             emulator.run_frame();
         }
@@ -623,7 +659,7 @@ mod tests {
 
     #[test]
     fn recording_logs_io_writes_and_counts_frames() {
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         for _ in 0..12 {
             emulator.run_frame();
         }
@@ -642,13 +678,13 @@ mod tests {
 
     #[test]
     fn execute_breakpoints_stop_a_frame_before_the_instruction() {
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         // 0x0150 is the first instruction after the entry point's jump.
         emulator.set_breakpoints(&[0x0150], &[]);
         emulator.run_frame();
         assert_eq!(emulator.take_breakpoint_hit(), None, "only while recording");
 
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         emulator.set_breakpoints(&[0x0150], &[]);
         emulator.set_xray(true);
         emulator.run_frame();
@@ -666,7 +702,7 @@ mod tests {
 
     #[test]
     fn write_breakpoints_stop_right_after_the_write() {
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         emulator.set_xray(true);
         // The demo writes its sprite's Y position to OAM every frame, but
         // only after setup: let that finish first.
@@ -695,7 +731,7 @@ mod tests {
 
     #[test]
     fn link_messages_round_trip_through_their_byte_encoding() {
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         emulator.set_linked(true);
         assert!(emulator.take_link_messages().is_empty());
         // Unknown kinds and odd lengths are ignored rather than panicking.
@@ -712,14 +748,29 @@ mod tests {
 
     #[test]
     fn the_demo_is_a_dmg_game() {
-        let emulator = Emulator::demo();
+        let emulator = Emulator::demo("auto");
         assert!(!emulator.is_cgb());
         assert!(emulator.palette_ram().is_empty());
     }
 
     #[test]
+    fn the_demo_on_a_color_runs_in_compatibility_mode() {
+        let mut emulator = Emulator::demo("cgb");
+        assert!(emulator.is_cgb() && emulator.is_compat());
+        let red = [0xFF, 0x00, 0x00];
+        emulator.set_compat_palettes(&red.repeat(12));
+        for _ in 0..12 {
+            emulator.run_frame();
+        }
+        let mut rgba = vec![0u8; SCREEN_WIDTH * SCREEN_HEIGHT * 4];
+        emulator.copy_frame(&mut rgba);
+        assert_eq!(rgba[..4], [0xFF, 0x00, 0x00, 0xFF]);
+        assert_eq!(emulator.palette_ram()[..2], [0x1F, 0x00]);
+    }
+
+    #[test]
     fn stepping_and_inspection() {
-        let mut emulator = Emulator::demo();
+        let mut emulator = Emulator::demo("auto");
         // The entry point is NOP ; JP $0150.
         assert_eq!(emulator.disassemble(0x0100), "1|NOP|");
         assert_eq!(emulator.disassemble(0x0101), "3|JP|$0150");
