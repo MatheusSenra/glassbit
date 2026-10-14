@@ -342,6 +342,93 @@ select {
   border: 1px solid var(--border);
 }
 
+.xray-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+
+.xray-form input {
+  width: 6rem;
+  font: inherit;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+}
+
+#xray .error {
+  color: #ff9a8a;
+}
+
+#xray button.small {
+  padding: 0.05rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.xray-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-bottom: 0.4rem;
+}
+
+.xray-chips button {
+  padding: 0.1rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.xray-code tr.clickable {
+  cursor: pointer;
+}
+
+.xray-code tr.clickable:hover td {
+  background: rgb(126 224 234 / 8%);
+}
+
+.xray-code td:first-child {
+  width: 1rem;
+  color: #ff4d6d;
+}
+
+.xray-hex {
+  border-collapse: collapse;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.8rem;
+}
+
+.xray-hex th {
+  padding-right: 0.6rem;
+  color: var(--muted);
+  font-weight: normal;
+}
+
+.xray-hex td {
+  padding: 0 0.15rem;
+}
+
+.xray-hex td.ascii {
+  padding-left: 0.6rem;
+  color: var(--muted);
+  white-space: pre;
+}
+
+.xray-hex td.at-pc {
+  outline: 1px solid var(--accent);
+}
+
+.xray-hex td.at-sp {
+  outline: 1px solid #c792ea;
+}
+
+.xray-hex td.at-hl {
+  outline: 1px solid #82aaff;
+}
+
 #xray-tilemap {
   width: 256px;
 }

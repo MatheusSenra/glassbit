@@ -75,6 +75,25 @@ const INTERRUPTS = [
 ];
 const TIMER_HZ = [4096, 262144, 65536, 16384];
 
+const HEX_ROWS = 16;
+// Quick jumps for the memory viewer.
+const HEX_SHORTCUTS = [
+  ["ROM", 0x0000],
+  ["ROM bank", 0x4000],
+  ["VRAM", 0x8000],
+  ["Cart RAM", 0xa000],
+  ["WRAM", 0xc000],
+  ["OAM", 0xfe00],
+  ["I/O", 0xff00],
+  ["HRAM", 0xff80],
+];
+
+/** Reads "C000", "$c000" or "0xC000"; returns null for anything else. */
+function parseAddress(text) {
+  const match = /^(?:\$|0x)?([0-9a-f]{1,4})$/i.exec(text.trim());
+  return match ? parseInt(match[1], 16) : null;
+}
+
 const hex8 = (value) => "$" + value.toString(16).toUpperCase().padStart(2, "0");
 const hex16 = (value) => "$" + value.toString(16).toUpperCase().padStart(4, "0");
 
@@ -127,11 +146,14 @@ function row(cells, cellTag = "td") {
 }
 
 function section(id, titleKey, docsPage, body) {
+  const docs = docsPage
+    ? `<a href="${DOCS}${docsPage}" target="_blank" rel="noopener" data-i18n="xray.docs"></a>`
+    : "";
   return `
     <details class="xray-section" id="xray-${id}" open>
       <summary>
         <span data-i18n="${titleKey}"></span>
-        <a href="${DOCS}${docsPage}" target="_blank" rel="noopener" data-i18n="xray.docs"></a>
+        ${docs}
       </summary>
       ${body}
     </details>`;
@@ -164,6 +186,24 @@ const TEMPLATE = `
   )}
 
   ${section(
+    "breakpoints",
+    "bp.title",
+    null,
+    `
+    <p class="note" data-i18n="bp.hint"></p>
+    <form id="xray-bp-form" class="xray-form">
+      <input id="xray-bp-address" type="text" inputmode="text" maxlength="5" placeholder="C000" aria-label="Address" />
+      <select id="xray-bp-kind">
+        <option value="execute" data-i18n="bp.execute"></option>
+        <option value="write" data-i18n="bp.write"></option>
+      </select>
+      <button type="submit" data-i18n="bp.add"></button>
+    </form>
+    <p id="xray-bp-error" class="note error" hidden data-i18n="bp.invalid"></p>
+    <ul id="xray-bp-list" class="xray-list"></ul>`,
+  )}
+
+  ${section(
     "ppu",
     "ppu.title",
     "Rendering.html",
@@ -184,6 +224,22 @@ const TEMPLATE = `
     "mem.title",
     "Memory_Map.html",
     `
+    <h3 data-i18n="hex.title"></h3>
+    <form id="xray-hex-form" class="xray-form">
+      <input id="xray-hex-address" type="text" maxlength="5" value="C000" aria-label="Address" />
+      <button type="submit" data-i18n="hex.go"></button>
+      <label class="inline"><span data-i18n="hex.follow"></span>
+        <select id="xray-hex-follow">
+          <option value="" data-i18n="hex.follow.none"></option>
+          <option value="pc">PC</option>
+          <option value="sp">SP</option>
+          <option value="hl">HL</option>
+        </select>
+      </label>
+    </form>
+    <div id="xray-hex-regions" class="xray-chips"></div>
+    <table id="xray-hex" class="xray-hex"></table>
+    <p class="note" data-i18n="hex.hint"></p>
     <h3 data-i18n="mem.map"></h3>
     <table id="xray-regions" class="xray-table"></table>
     <h3 data-i18n="mem.io.title"></h3>
@@ -211,7 +267,8 @@ const TEMPLATE = `
 export class Xray {
   /**
    * @param root the element the panel lives in
-   * @param actions `{ togglePause, stepInstruction, stepLine, stepFrame }`
+   * @param actions `{ togglePause, stepInstruction, stepLine, stepFrame,
+   *   breakpointsChanged(execute, write), refresh }`
    */
   constructor(root, actions) {
     this.root = root;
@@ -220,6 +277,15 @@ export class Xray {
     this.previousState = null;
     // The instruction executed by the last single step.
     this.lastExecuted = null;
+    // Why the game last stopped by itself, already translated; or null.
+    this.stopReason = null;
+    this.actions = actions;
+    this.breakpoints = { execute: new Set(), write: new Set() };
+    // The memory viewer: first address shown, what it follows, and the
+    // bytes shown last time (to highlight what a step changed).
+    this.hexStart = 0xc000;
+    this.hexFollow = "";
+    this.hexPrevious = null;
 
     root.innerHTML = TEMPLATE;
     translatePage(root);
@@ -230,6 +296,82 @@ export class Xray {
     on("#xray-step-frame", actions.stepFrame);
     this.tilemap = root.querySelector("#xray-tilemap").getContext("2d");
     this.tiles = root.querySelector("#xray-tiles").getContext("2d");
+
+    root.querySelector("#xray-bp-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const input = root.querySelector("#xray-bp-address");
+      const address = parseAddress(input.value);
+      root.querySelector("#xray-bp-error").hidden = address !== null;
+      if (address === null) return;
+      this.breakpoints[root.querySelector("#xray-bp-kind").value].add(address);
+      input.value = "";
+      this.breakpointsChanged();
+    });
+
+    root.querySelector("#xray-hex-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const address = parseAddress(root.querySelector("#xray-hex-address").value);
+      if (address === null) return;
+      this.showMemory(address);
+    });
+    root.querySelector("#xray-hex-follow").addEventListener("change", (event) => {
+      this.hexFollow = event.target.value;
+      this.hexPrevious = null;
+      actions.refresh();
+    });
+    const regions = root.querySelector("#xray-hex-regions");
+    for (const [label, address] of HEX_SHORTCUTS) {
+      const chip = element("button", label);
+      chip.type = "button";
+      chip.addEventListener("click", () => this.showMemory(address));
+      regions.append(chip);
+    }
+  }
+
+  /** Points the memory viewer at `address` and stops following a register. */
+  showMemory(address) {
+    this.hexStart = address & 0xfff0;
+    this.hexFollow = "";
+    this.hexPrevious = null;
+    this.root.querySelector("#xray-hex-follow").value = "";
+    this.root.querySelector("#xray-hex-address").value = hex16(this.hexStart).slice(1);
+    this.actions.refresh();
+  }
+
+  /** The breakpoints as two arrays of addresses, for the emulator. */
+  breakpointArrays() {
+    return [
+      new Uint16Array([...this.breakpoints.execute]),
+      new Uint16Array([...this.breakpoints.write]),
+    ];
+  }
+
+  breakpointsChanged() {
+    this.actions.breakpointsChanged(...this.breakpointArrays());
+    this.actions.refresh();
+  }
+
+  toggleExecuteBreakpoint(address) {
+    const set = this.breakpoints.execute;
+    if (set.has(address)) set.delete(address);
+    else set.add(address);
+    this.breakpointsChanged();
+  }
+
+  /**
+   * Records why the game stopped, from the emulator's report such as
+   * "execute|0150" or "write|C000|07". `null` clears it.
+   */
+  setStopReason(report) {
+    if (!report) {
+      this.stopReason = null;
+      return;
+    }
+    const [kind, address, value] = report.split("|");
+    this.stopReason =
+      kind === "execute"
+        ? t("bp.hit.execute", `$${address}`)
+        : t("bp.hit.write", `$${address}`, `$${value}`);
   }
 
   setOpen(open) {
@@ -266,12 +408,18 @@ export class Xray {
     if (!this.open || !emulator) return;
     const $ = (id) => this.root.querySelector(id);
     $("#xray-pause").textContent = t(paused ? "button.resume" : "button.pause");
-    $("#xray-state").textContent = t(paused ? "xray.paused" : "xray.running");
+    $("#xray-state").textContent =
+      this.stopReason ?? t(paused ? "xray.paused" : "xray.running");
+    $("#xray-state").classList.toggle("changed", this.stopReason !== null);
     // While running, a diff against some old step would be misleading.
-    if (!paused) this.forget();
+    if (!paused) {
+      this.forget();
+      this.hexPrevious = null;
+    }
 
     const state = Array.from(emulator.cpu_state());
     if ($("#xray-cpu").open) this.renderCpu($, emulator, state);
+    if ($("#xray-breakpoints").open) this.renderBreakpoints($);
     if ($("#xray-ppu").open) this.renderPpu($, emulator);
     if ($("#xray-memory").open) this.renderMemory($, emulator, state);
     if ($("#xray-interrupts").open) this.renderInterrupts($, emulator, state);
@@ -319,12 +467,74 @@ export class Xray {
     for (let i = 0; i < NEXT_INSTRUCTIONS; i++) {
       const instruction = decode(emulator, address);
       first ??= instruction;
-      const line = row([hex16(address), instruction.bytes, instruction.text]);
-      if (i === 0) line.className = "current";
+      const marked = this.breakpoints.execute.has(address);
+      const line = row([marked ? "●" : "", hex16(address), instruction.bytes, instruction.text]);
+      line.classList.toggle("current", i === 0);
+      line.classList.add("clickable");
+      line.title = t("bp.hint");
+      const target = address;
+      line.addEventListener("click", () => this.toggleExecuteBreakpoint(target));
       table.append(line);
       address = (address + instruction.length) & 0xffff;
     }
     $("#xray-next-explanation").textContent = `${first.text}: ${explain(first)}`;
+  }
+
+  renderBreakpoints($) {
+    const list = $("#xray-bp-list");
+    list.replaceChildren();
+    for (const kind of ["execute", "write"]) {
+      for (const address of [...this.breakpoints[kind]].sort((a, b) => a - b)) {
+        const item = element("li", t(`bp.entry.${kind}`, hex16(address)) + " ");
+        const remove = element("button", t("bp.remove"), "small");
+        remove.type = "button";
+        remove.addEventListener("click", () => {
+          this.breakpoints[kind].delete(address);
+          this.breakpointsChanged();
+        });
+        item.append(remove);
+        list.append(item);
+      }
+    }
+    if (list.children.length === 0) list.append(element("li", t("bp.none")));
+  }
+
+  renderHex($, emulator, state) {
+    const pointers = { pc: state[5], sp: state[4], hl: state[3] };
+    if (this.hexFollow) {
+      // Show the followed address on the third row, with context above it.
+      this.hexStart = ((pointers[this.hexFollow] & 0xfff0) - 0x20) & 0xffff;
+      $("#xray-hex-address").value = hex16(this.hexStart).slice(1);
+    }
+    const start = this.hexStart;
+    const bytes = emulator.read_range(start, HEX_ROWS * 16);
+    const previous = this.hexPrevious?.start === start ? this.hexPrevious.bytes : null;
+
+    const table = $("#xray-hex");
+    table.replaceChildren();
+    for (let rowIndex = 0; rowIndex < HEX_ROWS; rowIndex++) {
+      const tr = document.createElement("tr");
+      tr.append(element("th", hex16((start + rowIndex * 16) & 0xffff)));
+      let text = "";
+      for (let column = 0; column < 16; column++) {
+        const index = rowIndex * 16 + column;
+        const address = (start + index) & 0xffff;
+        const value = bytes[index];
+        const cell = element("td", value.toString(16).toUpperCase().padStart(2, "0"));
+        if (previous && previous[index] !== value) cell.classList.add("changed");
+        for (const [name, pointer] of Object.entries(pointers)) {
+          if (pointer === address) {
+            cell.classList.add(`at-${name}`);
+            cell.title = name.toUpperCase();
+          }
+        }
+        tr.append(cell);
+        text += value >= 0x20 && value < 0x7f ? String.fromCharCode(value) : ".";
+      }
+      tr.append(element("td", text, "ascii"));
+      table.append(tr);
+    }
+    this.hexPrevious = { start, bytes };
   }
 
   renderPpu($, emulator) {
@@ -446,6 +656,7 @@ export class Xray {
   }
 
   renderMemory($, emulator, state) {
+    this.renderHex($, emulator, state);
     const pointers = REGISTER_NAMES.slice(1).map((name, index) => [name, state[index + 1]]);
     const regions = $("#xray-regions");
     regions.replaceChildren(row([t("mem.range"), t("mem.region"), t("mem.pointers")], "th"));

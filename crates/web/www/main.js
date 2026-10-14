@@ -51,6 +51,8 @@ const pauseButton = document.getElementById("pause");
 const muteButton = document.getElementById("mute");
 const xrayButton = document.getElementById("xray-toggle");
 const fastButton = document.getElementById("fast");
+const exportSaveButton = document.getElementById("export-save");
+const importSaveLabel = document.getElementById("import-save-label");
 const paletteSelect = document.getElementById("palette");
 const languageSelect = document.getElementById("language");
 const screenFrame = document.getElementById("screen-frame");
@@ -72,6 +74,9 @@ let framesSinceXray = 0;
 let fastHeld = false;
 let fastLocked = false;
 let paletteName = "green";
+// The ROM of the running game, needed to restart it with an imported save;
+// null for the built-in demo.
+let currentRom = null;
 
 // Status lines are kept as translation keys so they can follow a language
 // change: `[key, ...arguments]`.
@@ -107,12 +112,14 @@ async function storeSave(target = emulator) {
   }
 }
 
-async function start(newEmulator, message) {
+// Replaces the running emulator. `keepPreviousSave: false` skips storing
+// the old cartridge's save, for when a save was just imported over it.
+async function start(newEmulator, message, { keepPreviousSave = true } = {}) {
   const previous = emulator;
   // Stop the old cartridge first, so nothing runs while its save is stored.
   emulator = null;
   if (previous) {
-    await storeSave(previous);
+    if (keepPreviousSave) await storeSave(previous);
     // Free the wasm memory of the cartridge being replaced.
     previous.free();
   }
@@ -132,6 +139,10 @@ async function start(newEmulator, message) {
   newEmulator.set_sample_rate(audio.sampleRate);
   newEmulator.set_palette(new Uint8Array(PALETTES[paletteName].flat()));
   newEmulator.set_xray(xray.open);
+  newEmulator.set_breakpoints(...xray.breakpointArrays());
+  exportSaveButton.hidden = !newEmulator.has_battery();
+  importSaveLabel.hidden = !newEmulator.has_battery();
+  xray.setStopReason(null);
   emulator = newEmulator;
   pendingMs = 0;
   xray.forget();
@@ -149,6 +160,7 @@ async function loadRom(bytes, name) {
     setStatus(["status.loadError", name, error.message], true);
     return;
   }
+  currentRom = { bytes, name };
   await start(loaded, ["status.rom", loaded.title() || name, name]);
 }
 
@@ -191,6 +203,11 @@ function onAnimationFrame(now) {
     pendingMs -= FRAME_MS;
     framesSinceXray++;
     ran = true;
+    const hit = emulator.take_breakpoint_hit();
+    if (hit) {
+      stopAtBreakpoint(hit);
+      return;
+    }
   }
   if (!ran) return;
   draw();
@@ -200,21 +217,33 @@ function onAnimationFrame(now) {
   }
 }
 
+// Pauses the game where a breakpoint stopped it and shows why.
+function stopAtBreakpoint(report) {
+  xray.setStopReason(report);
+  draw();
+  setPaused(true);
+}
+
 // Pauses and advances the emulator by one unit, then shows the result.
 function step(advance, singleInstruction = false) {
   if (!emulator) return;
   paused = true;
+  xray.setStopReason(null);
   xray.beforeStep(emulator, singleInstruction);
   advance(emulator);
+  // A line or frame step can also end at a breakpoint.
+  xray.setStopReason(emulator.take_breakpoint_hit() ?? null);
   draw();
   setPaused(true);
 }
 
 const xray = new Xray(document.getElementById("xray"), {
-  togglePause: () => setPaused(!paused),
+  togglePause: () => setPausedByUser(!paused),
   stepInstruction: () => step((machine) => machine.step_instruction(), true),
   stepLine: () => step((machine) => machine.step_line()),
   stepFrame: () => step((machine) => machine.run_frame()),
+  breakpointsChanged: (execute, write) => emulator?.set_breakpoints(execute, write),
+  refresh: () => xray.render(emulator, paused),
 });
 
 function setXrayOpen(open) {
@@ -346,9 +375,63 @@ document.getElementById("rom-input").addEventListener("change", (event) => {
   event.target.value = "";
 });
 
+function setPausedByUser(value) {
+  if (!value) xray.setStopReason(null);
+  setPaused(value);
+}
+
 pauseButton.addEventListener("click", () => {
-  setPaused(!paused);
+  setPausedByUser(!paused);
   canvas.focus();
+});
+
+// Downloads the cartridge RAM as a .sav file, the format most emulators use.
+function exportSave() {
+  const data = emulator?.save_data();
+  if (!data) {
+    setSaveStatus(["save.noBattery"]);
+    return;
+  }
+  const base = (currentRom?.name ?? emulator.title()).replace(/\.[^.]*$/, "");
+  const fileName = `${base}.sav`;
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([data], { type: "application/octet-stream" }));
+  link.download = fileName;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  setSaveStatus(["save.exported", fileName]);
+  canvas.focus();
+}
+
+// Restarts the game with the RAM from a .sav file. A running game would
+// not notice its RAM changing under it, so it is powered on again.
+async function importSave(file) {
+  if (!file) return;
+  if (!currentRom) {
+    setSaveStatus(["save.needRom"]);
+    return;
+  }
+  try {
+    const fresh = new Emulator(currentRom.bytes);
+    if (!fresh.load_save(new Uint8Array(await file.arrayBuffer()))) {
+      fresh.free();
+      setSaveStatus(["save.noBattery"]);
+      return;
+    }
+    await writeSave(fresh.save_key(), fresh.save_data());
+    await start(fresh, ["status.rom", fresh.title() || currentRom.name, currentRom.name], {
+      keepPreviousSave: false,
+    });
+    setSaveStatus(["save.imported", file.name]);
+  } catch (error) {
+    setSaveStatus(["save.importError", file.name, error.message ?? String(error)]);
+  }
+}
+
+exportSaveButton.addEventListener("click", exportSave);
+document.getElementById("import-save").addEventListener("change", (event) => {
+  importSave(event.target.files[0]);
+  event.target.value = "";
 });
 
 muteButton.addEventListener("click", () => {
@@ -380,6 +463,7 @@ paletteSelect.addEventListener("change", () => {
 });
 
 document.getElementById("demo").addEventListener("click", () => {
+  currentRom = null;
   start(Emulator.demo(), ["status.demo"]);
 });
 
@@ -447,4 +531,7 @@ window.glassbit = {
   saveState,
   loadState,
   setPalette,
+  exportSave,
+  importSave,
+  stopAtBreakpoint,
 };
