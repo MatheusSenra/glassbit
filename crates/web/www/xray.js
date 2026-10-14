@@ -209,6 +209,11 @@ const TEMPLATE = `
     "Rendering.html",
     `
     <table id="xray-ppu-state" class="xray-table"></table>
+    <div id="xray-palettes-block" hidden>
+      <h3 data-i18n="ppu.palettes"></h3>
+      <p class="note" data-i18n="ppu.palettesHint"></p>
+      <div id="xray-palettes" class="xray-palettes"></div>
+    </div>
     <h3 data-i18n="ppu.tilemap"></h3>
     <p class="note" data-i18n="ppu.tilemapHint"></p>
     <canvas id="xray-tilemap" width="256" height="256"></canvas>
@@ -545,8 +550,10 @@ export class Xray {
     const scy = emulator.peek(0xff42);
     const lcdOn = (lcdc & 0x80) !== 0;
 
+    const cgb = emulator.is_cgb();
     const table = $("#xray-ppu-state");
     table.replaceChildren(
+      row([t("ppu.console"), t(cgb ? "ppu.console.cgb" : "ppu.console.dmg")]),
       row([t("ppu.mode"), lcdOn ? t(`ppu.mode.${stat & 3}`) : t("ppu.lcdOff")]),
       row([t("ppu.line"), `${line}  (LYC ${emulator.peek(0xff45)})`]),
       row([t("ppu.scroll"), `${scx}, ${scy}`]),
@@ -554,11 +561,34 @@ export class Xray {
       row(["LCDC", `${hex8(lcdc)}  ${lcdc.toString(2).padStart(8, "0")}`]),
     );
 
+    $("#xray-palettes-block").hidden = !cgb;
+    if (cgb) this.renderPalettes($("#xray-palettes"), emulator.palette_ram());
+
     const vram = emulator.read_range(0x8000, 0x2000);
     const palette = emulator.peek(0xff47);
     this.drawTiles(vram, palette);
     this.drawTilemap(vram, palette, lcdc, scx, scy);
     this.renderSprites($("#xray-sprites"), emulator, lcdc, line);
+  }
+
+  /** Draws the 16 Color palettes as rows of four swatches. */
+  renderPalettes(container, ram) {
+    container.replaceChildren();
+    for (let palette = 0; palette < 16; palette++) {
+      const swatches = element("div", undefined, "xray-palette");
+      swatches.append(element("span", palette < 8 ? `BG${palette}` : `OBJ${palette - 8}`));
+      for (let color = 0; color < 4; color++) {
+        const index = palette * 8 + color * 2;
+        const value = ram[index] | (ram[index + 1] << 8);
+        const widen = (channel) => (channel << 3) | (channel >> 2);
+        const rgb = [value & 31, (value >> 5) & 31, (value >> 10) & 31].map(widen);
+        const swatch = element("i");
+        swatch.style.background = `rgb(${rgb.join(",")})`;
+        swatch.title = "$" + value.toString(16).toUpperCase().padStart(4, "0");
+        swatches.append(swatch);
+      }
+      container.append(swatches);
+    }
   }
 
   /** The color number (0-3) of one pixel of a tile. */

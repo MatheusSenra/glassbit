@@ -14,7 +14,7 @@ use glassbit_core::cpu::Registers;
 use glassbit_core::observer::Observer;
 use glassbit_core::ppu::Mode;
 use glassbit_core::serial::LinkMessage;
-use glassbit_core::{Button, GameBoy, SCREEN_HEIGHT, SCREEN_WIDTH};
+use glassbit_core::{Button, GameBoy, Model, SCREEN_HEIGHT, SCREEN_WIDTH};
 use wasm_bindgen::prelude::*;
 
 /// The default colors for the four DMG shades as RGBA, from lightest to
@@ -257,7 +257,28 @@ impl Emulator {
     /// Writes the screen as RGBA into `out`, which must hold
     /// `screen_width() * screen_height() * 4` bytes.
     pub fn copy_frame(&self, out: &mut [u8]) {
-        on!(self.machine(), gb => write_rgba(gb.framebuffer(), &self.palette, out))
+        on!(self.machine(), gb => {
+            if gb.model() == Model::Cgb {
+                write_color_rgba(gb.color_framebuffer(), out);
+            } else {
+                write_rgba(gb.framebuffer(), &self.palette, out);
+            }
+        })
+    }
+
+    /// Whether the game runs on a Game Boy Color, in color mode. The palette
+    /// chosen with `set_palette` only applies to DMG games.
+    pub fn is_cgb(&self) -> bool {
+        on!(self.machine(), gb => gb.model() == Model::Cgb)
+    }
+
+    /// The Color palette RAM, background palettes then sprite palettes (128
+    /// bytes); empty on a DMG.
+    pub fn palette_ram(&self) -> Vec<u8> {
+        on!(self.machine(), gb => match gb.palette_ram() {
+            Some((background, sprites)) => [background, sprites].concat(),
+            None => Vec::new(),
+        })
     }
 
     /// Chooses the screen colors: 12 bytes, red, green and blue for each
@@ -468,6 +489,19 @@ impl Emulator {
     }
 }
 
+/// Converts RGB555 to RGBA, widening each 5-bit channel to 8 bits.
+fn write_color_rgba(framebuffer: &[u16], out: &mut [u8]) {
+    let widen = |channel: u16| ((channel << 3) | (channel >> 2)) as u8;
+    for (pixel, &color) in out.chunks_exact_mut(4).zip(framebuffer) {
+        pixel.copy_from_slice(&[
+            widen(color & 0x1F),
+            widen(color >> 5 & 0x1F),
+            widen(color >> 10 & 0x1F),
+            0xFF,
+        ]);
+    }
+}
+
 fn write_rgba(framebuffer: &[u8], palette: &[[u8; 4]; 4], out: &mut [u8]) {
     for (pixel, &shade) in out.chunks_exact_mut(4).zip(framebuffer) {
         pixel.copy_from_slice(&palette[shade as usize]);
@@ -663,6 +697,20 @@ mod tests {
         // Unknown kinds and odd lengths are ignored rather than panicking.
         emulator.receive_link_messages(&[0, 0x42, 7, 1, 1]);
         emulator.set_linked(false);
+    }
+
+    #[test]
+    fn color_conversion_widens_five_bit_channels() {
+        let mut out = [0u8; 8];
+        write_color_rgba(&[0x7FFF, 0x001F], &mut out);
+        assert_eq!(out, [255, 255, 255, 255, 255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn the_demo_is_a_dmg_game() {
+        let emulator = Emulator::demo();
+        assert!(!emulator.is_cgb());
+        assert!(emulator.palette_ram().is_empty());
     }
 
     #[test]

@@ -487,6 +487,31 @@ select {
   outline: 1px solid #82aaff;
 }
 
+.xray-palettes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: 0.3rem 0.8rem;
+}
+
+.xray-palette {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  font: 0.75rem ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: var(--muted);
+}
+
+.xray-palette span {
+  width: 2.6rem;
+}
+
+.xray-palette i {
+  width: 1.1rem;
+  height: 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
 #xray-tilemap {
   width: 256px;
 }
