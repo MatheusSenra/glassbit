@@ -62,11 +62,21 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
   cycle more. Changing this breaks Mooneye `rapid_toggle` or `intr_timing`.
 - **Post-boot timer counter is `0xABC8`**, measured with Mooneye
   `boot_div-dmgABCmgb` (it is tied to the tick-before-access convention).
-- **The PPU renders one whole line when mode 3 starts** (no pixel FIFO). Mode
-  timing constants in `ppu.rs` (mode 3 at M-cycle 21 of the line, mode 0 at
-  64, line 0's OAM scan one cycle late) were fitted to Mooneye
-  `acceptance/ppu`; do not "correct" them to the dot counts in Pan Docs
-  without rerunning those tests. Mode 3 only grows with `SCX % 8`.
+- **Mode 3 is a dot-by-dot pixel FIFO** (`ppu.rs`): 6 startup dots, a
+  fetcher (tile number, low and high byte, 6 dots) that pushes 8 pixels
+  into the background FIFO only when it is empty, one pixel out per dot,
+  then one dot to mix (reads LCDC) and one to apply palettes (reads BGP/OBP,
+  with the DMG `old | new` BGP quirk). Sprites pause the output by Pan
+  Docs' penalty (6 dots, plus up to 5 for the first sprite on a tile); the
+  window restarts the fetcher; WX below 7 is compared during the first
+  fetch. Fitted constants: mode 3 starts at line M-cycle 21 with 3 of its
+  dots in that cycle (Mooneye `intr_2_mode0_timing_sprites`), mode 0 starts
+  with the last pixel, the fetcher reads on its dots 3/5/6 (Mealybug SCX/SCY
+  tests), line 0's OAM scan is one cycle late. Do not "correct" them to Pan
+  Docs without rerunning Mooneye `acceptance/ppu` and the Mealybug sweep
+  (`cargo test -p glassbit-runner --test mealybug`, plus comparing all
+  `*_dmg_blob.png` references with the runner's `--reference`). A
+  16-pixel FIFO (push at <= 8) was tried and made Mealybug much worse.
 - **The CPU is locked out of VRAM in mode 3 and of OAM in modes 2-3 and
   during OAM DMA** (`CpuBus` reads give `0xFF`, writes are dropped);
   `peek`/`poke` ignore the lockout.
@@ -81,9 +91,16 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
 - **`glassbit_core::demo::rom()` is a hand-assembled demo cartridge** used as
   the page's default and for end-to-end input tests. Web key mapping: arrows,
   X = A, Z = B, Enter = Start, Shift = Select.
-- **Mappers:** ROM-only, MBC1 (no multicart), MBC3 (MBC30 inferred from
-  sizes; RTC registers are storage only, the clock does not tick because the
-  core has no wall-clock time) and MBC5 (rumble ignored). MBC2 is missing.
+- **Mappers:** ROM-only, MBC1 (no multicart), MBC2 (512x4-bit RAM; address
+  bit 8 picks RAMG or ROMB), MBC3 (MBC30 inferred from sizes) and MBC5
+  (rumble ignored).
+- **MBC3 clock** (`cartridge/rtc.rs`): ticks with emulated time (1,048,576
+  M-cycles per second of real time, so half-rate during double speed); the
+  bus hands it cycles lazily (`sync_clock`) before cartridge accesses and at
+  the end of `run_frame`. The core has no wall clock: `save_data_at(now)`
+  appends the BGB/VBA 48-byte footer with a timestamp, and
+  `load_save_at(data, now)` lets the clock catch up. The page passes
+  `Date.now()` seconds.
 - **Battery saves are the frontend's job:** the core exposes `save_data`,
   `load_save` and `take_save_dirty`; the page stores raw cartridge RAM in
   IndexedDB (`www/saves.js`), keyed by title plus global checksum.
@@ -115,7 +132,12 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
   divergence. Loading masks or rejects values that could index out of bounds.
 - **Web extras:** save states go to a second IndexedDB store, fast-forward
   multiplies elapsed time by 4 and sends no audio, palettes are chosen in JS
-  and passed to `Emulator::set_palette`.
+  and passed to `Emulator::set_palette` (DMG shades) or
+  `Emulator::set_compat_palettes` (compatibility mode). The Console menu
+  passes `"auto"`, `"dmg"` or `"cgb"` to `new Emulator(rom, model)` and
+  powers the game on again when changed.
+- **Unused I/O registers read `0xFF` and ignore writes**; FF72-FF77 exist
+  only on Color hardware (FF74 only in color mode).
 - **Deploy:** `.github/workflows/pages.yml` publishes `crates/web/www` to
   GitHub Pages on every push to `main`
   (<https://matheussenra.github.io/glassbit/>).
@@ -140,8 +162,15 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
   part of save states.
 - **Game Boy Color:** `Model::for_header` picks the console: carts that
   declare Color support (0x80/0xC0) run in color mode, the rest on a DMG.
-  DMG compatibility mode on a Color is not emulated (so Mooneye `misc/` CGB
-  tests, which are DMG carts, fail). Color state: VRAM 2x8 KiB (`Ppu`),
+  `GameBoy::new_as(rom, Model::Cgb)` with a DMG cart gives compatibility
+  mode (`bus::Hardware::CgbCompat`): the bus acts as a DMG (Color registers
+  locked; VBK/BCPS/OCPS read what the boot ROM left), the PPU draws as a
+  DMG and maps each shade through BG palette 0 / OBJ palettes 0-1 into the
+  color framebuffer. Without the boot ROM there is no per-title palette
+  hash: `ppu::DEFAULT_COMPAT_PALETTES` (the unknown-title colors) until
+  `set_compat_palettes`. Post-boot CPU regs, I/O and the timer counter
+  (`0x2674`) come from Mooneye `misc/` tests; PPU timing stays DMG timing
+  (`vblank_stat_intr-C` and Mealybug `_cgb_c` references differ). Color state: VRAM 2x8 KiB (`Ppu`),
   WRAM 8x4 KiB, palette RAM, VBK/SVBK/KEY1/HDMA (`Bus::ColorState`). The
   color screen is a separate RGB555 framebuffer; `rgb_framebuffer()` gives
   RGB for either model (`x << 3 | x >> 2`, as the test references expect).
@@ -170,7 +199,9 @@ Core modules: `cpu`, `bus`, `ppu`, `timer`, `interrupts`, `joypad`, `serial`,
 
 Pan Docs (gbdev.io/pandocs), the gbdev opcode table and SM83 manual,
 SingleStepTests/sm83, Blargg (`cpu_instrs`, `instr_timing`, `mem_timing`),
-Mooneye acceptance tests, dmg-acid2.
+Mooneye acceptance tests, dmg-acid2, cgb-acid2, Mealybug Tearoom
+(mid-scanline, `*_dmg_blob.png`; most failures draw the boot ROM's (R)
+sprite, which is blank here), rtc3test.
 
 **Do not copy code from other emulators.** Work from documentation.
 
@@ -189,5 +220,6 @@ memory signature at `0xA000`, and Mooneye (registers B,C,D,E,H,L =
 
 ## Not done yet
 
-MBC2, the MBC3 real-time clock, DMG compatibility mode on the Color, a pixel
-FIFO for mid-scanline effects.
+Color-specific PPU timing, window re-activation and mid-line window
+re-enable quirks, per-title compatibility palettes, MBC1 multicart, wave RAM
+access while channel 3 plays.

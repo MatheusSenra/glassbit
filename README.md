@@ -29,11 +29,18 @@ starts with a built-in demo, and you can load your own ROM.
 
 ## What it does
 
-- Runs Game Boy and Game Boy Color games on ROM-only, MBC1, MBC3 and MBC5
-  cartridges, with video, sound and input. Color games get the Color's
+- Runs Game Boy and Game Boy Color games on ROM-only, MBC1, MBC2, MBC3 and
+  MBC5 cartridges, with video, sound and input. Color games get the Color's
   palettes, banked memory, VRAM DMA and double speed.
+- Draws the picture dot by dot through a pixel FIFO, like the real PPU, so
+  effects that change video registers in the middle of a scanline show up
+  where they should.
+- Runs original Game Boy games on a Game Boy Color too, in its
+  **compatibility mode**, which shows them in colors you can choose.
+- The MBC3 real-time clock keeps time, also while the page is closed.
 - Keeps battery saves in the browser, one per cartridge, and exports or
-  imports them as `.sav` files compatible with other emulators.
+  imports them as `.sav` files compatible with other emulators (clock
+  included).
 - Save states: freeze the whole machine and come back to that moment later.
 - Fast-forward at four times the speed, and four color palettes.
 - **Link cable over the internet**: two players connect their browsers
@@ -53,11 +60,11 @@ starts with a built-in demo, and you can load your own ROM.
   - **Memory viewer**: any 256 bytes in hexadecimal, optionally following PC,
     SP or HL, with the bytes a step changed highlighted.
 
-Not there yet: the MBC3 real-time clock does not tick, MBC2 cartridges are
-not supported, games made only for the original Game Boy always run on a DMG
-(the Color's compatibility mode, which colorizes them, is not emulated), and
-effects that change video registers in the middle of a scanline may look
-different from real hardware.
+Not there yet: the PPU follows DMG timing even on a Game Boy Color, whose
+timing differs by a few dots; switching the window off and on in the middle
+of a line is not exact; compatibility mode always starts with the same
+colors, while the real boot ROM picks them per game; MBC1 multicarts and
+reading wave RAM while channel 3 plays are not supported.
 
 ## Using it
 
@@ -73,6 +80,11 @@ different from real hardware.
 Load a ROM with **Open ROM** or by dropping the file on the page. ROMs stay
 in your browser and are never uploaded. Sound starts after your first click
 or key press, as browsers require.
+
+**Console** chooses the hardware. **Automatic** runs color games on a Game
+Boy Color and the rest on the original Game Boy. **Game Boy Color** runs
+original Game Boy games in the Color's compatibility mode, and **Colors**
+then lists palettes for it. Changing the console powers the game on again.
 
 **Save state** and **Load state** keep one snapshot per game in the browser.
 They are separate from the game's own battery save, which is stored
@@ -147,6 +159,7 @@ This prints the cartridge header and the test's verdict. Options:
 | `--reference ref.png` | Pass or fail by comparing the screen with an image. |
 | `--gif out.gif` | Record the run as an animation instead of looking for a verdict. |
 | `--press "start@80-86,left@150-156"` | While recording, hold buttons during the given frames. |
+| `--model dmg` or `--model cgb` | Choose the console instead of the one the cartridge asks for. |
 
 ## Test ROMs
 
@@ -158,7 +171,7 @@ bash scripts/fetch-test-roms.sh
 
 This fetches a pinned release of
 [c-sp/game-boy-test-roms](https://github.com/c-sp/game-boy-test-roms) (Blargg,
-Mooneye, dmg-acid2) and the
+Mooneye, dmg-acid2, cgb-acid2, Mealybug Tearoom, rtc3test and more) and the
 [SingleStepTests/sm83](https://github.com/SingleStepTests/sm83) CPU test
 vectors. Pass `--no-sm83` to skip the latter, which is large.
 
@@ -175,17 +188,26 @@ What passes today, all of it checked by `cargo test` in CI:
 | Blargg `dmg_sound` | 9 of 12 (not the three about wave RAM access while playing) |
 | dmg-acid2 | pixel-exact match with the reference image |
 | cgb-acid2 | pixel-exact match with the reference image |
+| Mealybug Tearoom (mid-scanline effects) | 4 of 24 pixel-exact on DMG, and one in compatibility mode; over all 24, the pixels that differ from the references went from about 72,000 with the old line renderer to about 14,000 |
 | Mooneye `acceptance/timer` | all 13 |
 | Mooneye `emulator-only/mbc1` | 12 of 13 (all but the multicart one) |
+| Mooneye `emulator-only/mbc2` | all 7 |
 | Mooneye `emulator-only/mbc5` | all 8 |
 | MBC3 bank tester | pixel-exact match with the reference image |
-| Save states | a restored console stays identical to the original, frame by frame, on seven test ROMs |
-| Mooneye `acceptance`, other | 44, covering instruction, interrupt, HALT, OAM DMA and PPU mode timing and the post-boot state |
+| rtc3test (MBC3 clock) | all 3 subtests match the reference screens |
+| Mooneye `misc` (Game Boy Color, compatibility mode) | 4 of 5: post-boot registers, I/O and DIV |
+| Save states | a restored console stays identical to the original, frame by frame, on eight test ROMs |
+| Mooneye `acceptance`, other | 46, covering instruction, interrupt, HALT, OAM DMA and PPU mode timing (sprites included) and the post-boot state |
 
-Of the Mooneye acceptance tests that do not pass, most target console models
-other than the DMG. The rest are five PPU tests that need pixel-level timing
-(the PPU draws a whole line at once), two `-GS` timing tests, and one that
-depends on I/O registers not implemented yet.
+Of the Mooneye acceptance tests that do not pass, nine target console models
+other than the DMG (DMG0, MGB, SGB). The rest are four PPU tests that need
+timing finer than one M-cycle (switching the LCD on, and when LY changes
+relative to the HBlank interrupt), two `-GS` timing tests and the serial
+clock's alignment at boot.
+
+Most Mealybug tests that do not match draw a sprite with the registered
+trademark symbol that the boot ROM leaves in video memory; Glassbit does not
+run the boot ROM, so that sprite is blank.
 
 ## Roadmap
 
@@ -202,6 +224,8 @@ depends on I/O registers not implemented yet.
 - [x] **Phase 9: Debugging and saves.** `.sav` export and import, breakpoints, memory viewer.
 - [x] **Phase 10: Link cable.** Two browsers linked over WebRTC.
 - [x] **Phase 11: Game Boy Color.** Color palettes and tile attributes, VRAM and WRAM banks, VRAM DMA, double speed. Pixel-exact `cgb-acid2`.
+- [x] **Phase 12: More cartridges.** MBC2, and the MBC3 real-time clock, saved with the battery RAM in the format other emulators use.
+- [x] **Phase 13: Pixel FIFO and compatibility mode.** Mode 3 drawn dot by dot for mid-scanline effects and exact sprite timing; DMG games on a Game Boy Color in color.
 
 
 ## Legal
